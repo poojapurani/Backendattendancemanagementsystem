@@ -38,22 +38,23 @@ exports.verifyToken = (req, res, next) => {
  * - Ensures only admins can access specific routes
  */
 exports.verifyAdmin = (req, res, next) => {
-  if (req.user && req.user.role === "Admin") { // Capital A
-    next();
-  } else {
-    return res.status(403).json({ message: "Access denied. Admins only." });
+  if (req.user && req.user.role && req.user.role.toLowerCase() === "admin") {
+    return next();
   }
+  return res.status(403).json({ message: "Access denied. Admins only." });
 };
 
-
-/**
- * ✅ User Access Middleware
- * - For employee/intern routes only
- */
 exports.verifyUser = (req, res, next) => {
-  if (req.user && (req.user.role === "Employee" || req.user.role === "Intern")) {
-    next();
-  } else {
-    return res.status(403).json({ message: "Access denied. User only route." });
+  if (!req.user) {
+    return res.status(401).json({ message: "Unauthorized." });
   }
+
+  const role = req.user.role.toLowerCase();
+
+  if (role === "user") {
+    return next();
+  }
+
+  return res.status(403).json({ message: "Access denied. User only route." });
 };
+
