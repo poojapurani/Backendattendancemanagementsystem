@@ -1,7 +1,0 @@
-express
-mysql2
-dotenv
-cors
-body-parser
-bcrypt
-jsonwebtoken
