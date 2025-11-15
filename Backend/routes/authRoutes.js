@@ -16,7 +16,8 @@ router.post("/login", authController.login);
 router.get("/", verifyToken, verifyAdmin, authController.getAllUsers);
 
 // Description: Updates user information like name, user_id, and role
-router.put("/:id", verifyToken, verifyAdmin, authController.updateUser);
+router.put("/emp/:empId", verifyToken, verifyAdmin, authController.updateUserByEmpId);
+
 
 // Description: Deletes a user by their ID
 router.delete("/:id", verifyToken, verifyAdmin, authController.deleteUser);

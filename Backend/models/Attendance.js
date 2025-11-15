@@ -9,10 +9,10 @@ const Attendance = sequelize.define(
       autoIncrement: true,
       primaryKey: true,
     },
-    user_id: {
-      type: DataTypes.INTEGER,
-      allowNull: false,
-    },
+    // user_id: {
+    //   type: DataTypes.INTEGER,
+    //   allowNull: false,
+    // },
     emp_id: {
       type: DataTypes.STRING,
       allowNull: false,
@@ -45,7 +45,7 @@ const Attendance = sequelize.define(
     indexes: [
       {
         unique: true,
-        fields: ["user_id", "date"], // ensure only one record per user per day
+        fields: ["emp_id", "date"], // ensure only one record per user per day
       },
     ],
   }

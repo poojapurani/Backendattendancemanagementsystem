@@ -3,6 +3,7 @@ const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 const Attendance = require("../models/Attendance");
 require("dotenv").config();
+const { Op, fn, col, where } = require("sequelize");
 
 /*----------------------------------------------------
     ADMIN REGISTERS FIRST ADMIN ONLY ONCE
@@ -45,6 +46,7 @@ exports.initialAdminRegister = async (req, res) => {
 ----------------------------------------------------*/
 exports.register = async (req, res) => {
   try {
+    const joiningDate = req.body.joining_date ? req.body.joining_date : new Date().toISOString().split("T")[0];
     let { emp_id, name, user_id, password, department } = req.body;
 
     emp_id = emp_id?.trim();
@@ -76,6 +78,7 @@ exports.register = async (req, res) => {
       password: hashedPassword,
       role,
       department,
+      joining_date: joiningDate
     });
 
     res.status(201).json({
@@ -113,9 +116,12 @@ exports.login = async (req, res) => {
     if (!isMatch) {
       return res.status(400).json({ message: "Invalid emp_id or password" });
     }
+
     if (!user.role || user.role.trim() === "") {
       user.role = "User";   // fallback so login never returns empty role
     }
+
+    // Generate JWT token
     const token = jwt.sign(
       {
         id: user.id,
@@ -124,12 +130,32 @@ exports.login = async (req, res) => {
         user_id: user.user_id,
         role: user.role,
         department: user.department,
+        joining_date: user.joining_date,
       },
       process.env.JWT_SECRET,
       { expiresIn: "1d" }
     );
 
-    res.status(200).json({ message: "Login successful", token, user });
+    // Check today's attendance
+    const today = new Date().toISOString().split("T")[0]; // 'YYYY-MM-DD'
+
+    // Fetch today's attendance for this user
+    const attendance = await Attendance.findOne({
+      where: { emp_id: user.emp_id, date: today }
+    });
+
+    const attendanceStatus = {
+      punched_in: attendance?.time_in ? true : false,
+      punched_out: attendance?.time_out ? true : false
+    };
+
+    res.status(200).json({
+      message: "Login successful",
+      token,
+      user,
+      attendanceStatus
+    });
+
 
   } catch (err) {
     console.error(err);
@@ -138,12 +164,19 @@ exports.login = async (req, res) => {
 };
 
 
+
 /*----------------------------------------------------
     GET ALL USERS (ADMIN)
 ----------------------------------------------------*/
 exports.getAllUsers = async (req, res) => {
   try {
-    const users = await User.findAll();
+    const users = await User.findAll({
+      where: where(
+        fn("LOWER", col("role")),
+        { [Op.ne]: "admin" }   // case-insensitive check
+      )
+    });
+
     res.status(200).json(users);
   } catch (err) {
     res.status(500).json({ message: "Error fetching users", error: err.message });
@@ -151,24 +184,41 @@ exports.getAllUsers = async (req, res) => {
 };
 
 
+
+
+
 /*----------------------------------------------------
     UPDATE USER (ADMIN)
 ----------------------------------------------------*/
-exports.updateUser = async (req, res) => {
+exports.updateUserByEmpId = async (req, res) => {
   try {
-    const { id } = req.params;
-    const { name, user_id, role } = req.body;
+    const { empId } = req.params;
+    const { name, user_id, role, department,joining_date } = req.body;
 
+    // Find user first
+    const user = await User.findOne({ where: { emp_id: empId } });
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Update user data
     await User.update(
-      { name, user_id, role },
-      { where: { id } }
+      { name, user_id, role, department, joining_date },
+      { where: { emp_id: empId } }
     );
 
     res.status(200).json({ message: "User updated successfully!" });
+
   } catch (err) {
-    res.status(500).json({ message: "Error updating user", error: err.message });
+    res.status(500).json({
+      message: "Error updating user",
+      error: err.message
+    });
   }
 };
+
+
 
 
 /*----------------------------------------------------
@@ -176,13 +226,33 @@ exports.updateUser = async (req, res) => {
 ----------------------------------------------------*/
 exports.deleteUser = async (req, res) => {
   try {
-    const { id } = req.params;
+    const { id } = req.params; // but this will be emp_id
 
-    await Attendance.destroy({ where: { user_id: id } });
-    await User.destroy({ where: { id } });
+    // Find user by emp_id
+    const user = await User.findOne({ where: { emp_id: id } });
 
-    res.status(200).json({ message: "User deleted successfully!" });
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const empId = user.emp_id;
+
+    // Delete related attendance
+    await Attendance.destroy({ where: { emp_id: empId } });
+
+    // Delete user
+    await User.destroy({ where: { emp_id: empId } });
+
+    res.status(200).json({
+      message: "User and attendance deleted successfully!"
+    });
+
   } catch (err) {
-    res.status(500).json({ message: "Error deleting user", error: err.message });
+    res.status(500).json({
+      message: "Error deleting user",
+      error: err.message
+    });
   }
 };
+
+

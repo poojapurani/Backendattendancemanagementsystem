@@ -36,6 +36,11 @@ const User = sequelize.define(
             type: DataTypes.STRING,
             allowNull: true,
         },
+        joining_date: { 
+            type: DataTypes.DATEONLY, 
+            allowNull: false, 
+            defaultValue: DataTypes.NOW 
+        },
     },
     {
         timestamps: true,
