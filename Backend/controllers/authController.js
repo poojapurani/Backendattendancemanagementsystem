@@ -42,7 +42,7 @@ exports.initialAdminRegister = async (req, res) => {
 
 
 /*----------------------------------------------------
-    ADMIN REGISTERS EMPLOYEE/INTERN
+    ADMIN REGISTERS EMPLOYEE
 ----------------------------------------------------*/
 exports.register = async (req, res) => {
   try {
@@ -92,7 +92,6 @@ exports.register = async (req, res) => {
     res.status(500).json({ message: "Internal server error", error: err.message });
   }
 };
-
 
 /*----------------------------------------------------
     LOGIN (ADMIN & EMPLOYEE)
@@ -162,8 +161,6 @@ exports.login = async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 };
-
-
 
 /*----------------------------------------------------
     GET ALL USERS (ADMIN)
