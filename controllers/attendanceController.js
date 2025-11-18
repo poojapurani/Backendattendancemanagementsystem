@@ -736,20 +736,18 @@ exports.getAttendanceReport = async (req, res) => {
         if (entry.status === "absent") absent++;
         // console.log(`   ✔ ${dateStr} → PRESENT (${status})`);
       }
-      else if (!entry && dateStr >= joiningStr && dateStr < todayStr) {
-        status = "absent";
-        isPresent = false;
-        absent++;
+      // BEFORE FIRST PUNCH → NOT SET
+      if (!entry && (!firstPunchDate || dateStr < firstPunchDate) && dateStr >= joiningStr) {
+        status = "not set";
+        isPresent = "not set";
       }
 
-
-      // AFTER FIRST PUNCH-IN → ABSENT IF THERE IS NO ENTRY
-      else if (firstPunchDate &&!entry &&dateStr > firstPunchDate &&dateStr < todayStr) {
+      // AFTER FIRST PUNCH → ABSENT
+      else if (firstPunchDate && !entry && dateStr > firstPunchDate && dateStr < todayStr) {
         status = "absent";
         isPresent = false;
         absent++;
 
-        // SAVE ABSENT ENTRY ONLY HERE
         await Attendance.findOrCreate({
           where: { emp_id: empId, date: dateStr },
           defaults: {
@@ -762,6 +760,7 @@ exports.getAttendanceReport = async (req, res) => {
           }
         });
       }
+
 
 
       fullRecords.push({
