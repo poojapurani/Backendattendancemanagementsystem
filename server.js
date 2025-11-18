@@ -8,7 +8,7 @@ dotenv.config();
 const app = express();
 
 const corsOptions = {
-  origin: "https://c80543b8-d8ed-4f02-a83b-c371137fc5a5-00-3ozfewtsky73d.sisko.replit.dev",
+  origin: "https://00952ee7-5d76-4f1d-bd10-fa9f26f4d776-00-v6w4h6hevza4.sisko.replit.dev",
   methods: "GET,HEAD,PUT,PATCH,POST,DELETE",
   credentials: true,
 };
