@@ -76,13 +76,22 @@ exports.punchIn = async (req, res) => {
       status = "half-day";
     }
 
+    let isPresent = false;
+
+    const normalized = status.trim().toLowerCase();
+    if (["present", "late", "half-day"].includes(normalized)) {
+      isPresent = true;
+    }
     const record = await Attendance.create({
       // user_id: userId,
       emp_id,
       date: today,
       time_in: currentTime,
       status
+     
     });
+
+    
 
 
     res.json({
@@ -90,7 +99,8 @@ exports.punchIn = async (req, res) => {
       success: true,
       // status,
       // late_by: lateMinutes > 0 ? `${lateMinutes} min late` : "On time",
-      attendance: record
+      attendance: record,
+      isPresent
     });
 
   } catch (err) {
@@ -99,6 +109,156 @@ exports.punchIn = async (req, res) => {
   }
 };
 
+
+// Helper
+function secondsToHHMMSS(totalSeconds) {
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
+}
+
+function calculateDuration(startTime, endTime) {
+  if (!startTime || !endTime) return null;
+  const start = new Date(`1970-01-01T${startTime}`);
+  const end = new Date(`1970-01-01T${endTime}`);
+  const diffSeconds = Math.max(0, (end - start) / 1000);
+  return secondsToHHMMSS(diffSeconds);
+}
+
+
+// Add Lunch Break
+// Break & Lunch APIs
+// Start Normal Break
+exports.startBreak = async (req, res) => {
+  try {
+    const emp_id = req.user.emp_id;
+    const today = new Date().toISOString().slice(0, 10);
+    const now = new Date().toTimeString().slice(0, 8);
+
+    const record = await Attendance.findOne({ where: { emp_id, date: today } });
+
+    if (!record || !record.time_in) return res.status(400).json({ message: "Punch in first!" });
+    
+    // Check if any break/lunch is ongoing
+    if (record.break_start && !record.break_end) return res.status(400).json({ message: "Normal break already started!" });
+    if (record.lunch_start && !record.lunch_end) return res.status(400).json({ message: "Lunch break ongoing, cannot start normal break!" });
+
+    await record.update({ break_start: now, break_end: null });
+    res.json({ message: "Break started", break_start: now });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server Error" });
+  }
+};
+
+// End Normal Break
+exports.endBreak = async (req, res) => {
+  try {
+    const emp_id = req.user.emp_id;
+    const today = new Date().toISOString().slice(0, 10);
+    const now = new Date().toTimeString().slice(0, 8);
+
+    const record = await Attendance.findOne({ where: { emp_id, date: today } });
+    if (!record || !record.break_start) return res.status(400).json({ message: "Break not started!" });
+
+    await record.update({ break_end: now });
+
+    const duration = calculateDuration(record.break_start, now);
+    res.json({ message: "Break ended", break_end: now, break_duration: duration });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server Error" });
+  }
+};
+
+// Start Lunch Break
+exports.startLunch = async (req, res) => {
+  try {
+    const emp_id = req.user.emp_id;
+    const today = new Date().toISOString().slice(0, 10);
+    const now = new Date().toTimeString().slice(0, 8);
+
+    const record = await Attendance.findOne({ where: { emp_id, date: today } });
+    if (!record || !record.time_in) return res.status(400).json({ message: "Punch in first!" });
+
+    if (record.lunch_start && !record.lunch_end) return res.status(400).json({ message: "Lunch already started!" });
+    if (record.break_start && !record.break_end) return res.status(400).json({ message: "Normal break ongoing, cannot start lunch!" });
+
+    await record.update({ lunch_start: now, lunch_end: null });
+    res.json({ message: "Lunch started", lunch_start: now });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server Error" });
+  }
+};
+
+// End Lunch Break
+exports.endLunch = async (req, res) => {
+  try {
+    const emp_id = req.user.emp_id;
+    const today = new Date().toISOString().slice(0, 10);
+    const now = new Date().toTimeString().slice(0, 8);
+
+    const record = await Attendance.findOne({ where: { emp_id, date: today } });
+    if (!record || !record.lunch_start) return res.status(400).json({ message: "Lunch not started!" });
+
+    await record.update({ lunch_end: now });
+
+    const duration = calculateDuration(record.lunch_start, now);
+    res.json({ message: "Lunch ended", lunch_end: now, lunch_duration: duration });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server Error" });
+  }
+};
+
+
+exports.getTodayAttendanceStatus = async (req, res) => {
+  try {
+    const emp_id = req.user.emp_id;
+
+    if (!emp_id) {
+      return res.status(400).json({ message: "emp_id missing from token" });
+    }
+
+    const user = await User.findOne({ where: { emp_id } });
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const today = new Date().toISOString().split("T")[0];
+
+    const attendance = await Attendance.findOne({
+      where: { emp_id, date: today }
+    });
+
+    const attendanceStatus = {
+      punched_in: attendance?.time_in ? true : false,
+      punched_out: attendance?.time_out ? true : false,
+      status: attendance?.status || "not set",
+      time_in: attendance?.time_in || null,
+      time_out: attendance?.time_out || null,
+      working_hours: attendance?.working_hours || "00:00:00",
+
+      // 🔥 Added break details
+      lunch_start: attendance?.lunch_start || null,
+      lunch_end: attendance?.lunch_end || null,
+      break_start: attendance?.break_start || null,
+      break_end: attendance?.break_end || null
+    };
+
+    res.json({
+      emp_id,
+      date: today,
+      attendanceStatus
+    });
+
+  } catch (err) {
+    console.error("Attendance Status Error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
 
 
 // Punch Out
@@ -126,15 +286,35 @@ exports.punchOut = async (req, res) => {
     }
 
     // Working hours calculation
-    const timeIn = new Date(`${today}T${record.time_in}`);
-    const diffMs = now - timeIn;
+
+   const timeIn = new Date(`${today}T${record.time_in}`);
+    let diffMs = now - timeIn;
+
+    // 🔹 Subtract breaks if present
+    let totalBreakMs = 0;
+
+    if (record.lunch_start && record.lunch_end) {
+      const lunchStart = new Date(`${today}T${record.lunch_start}`);
+      const lunchEnd = new Date(`${today}T${record.lunch_end}`);
+      totalBreakMs += Math.max(0, lunchEnd - lunchStart);
+    }
+
+    if (record.break_start && record.break_end) {
+      const breakStart = new Date(`${today}T${record.break_start}`);
+      const breakEnd = new Date(`${today}T${record.break_end}`);
+      totalBreakMs += Math.max(0, breakEnd - breakStart);
+    }
+
+    diffMs -= totalBreakMs;
 
     const hours = Math.floor(diffMs / 3600000);
     const minutes = Math.floor((diffMs % 3600000) / 60000);
     const seconds = Math.floor((diffMs % 60000) / 1000);
 
-    const working_hours = `${hours.toString().padStart(2, "0")}:${minutes.toString()
+    const working_hours = `${hours.toString().padStart(2, "0")}:${minutes
+      .toString()
       .padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
+
 
     let finalStatus = record.status;
 
@@ -288,6 +468,8 @@ exports.getHistory = async (req, res) => {
       let time_out = null;
       let working_hours = "00:00:00";
       let isPresent = false;
+      let break_duration = "00:00:00";
+      let lunch_duration = "00:00:00";
 
       // NOT SET RULE
       // If punch starts on a later date, earlier dates = NOT SET
@@ -300,7 +482,9 @@ exports.getHistory = async (req, res) => {
             time_out: null,
             working_hours: "00:00:00",
             status: "not set",
-            isPresent: "not set"
+            isPresent: "not set",
+            break_duration,
+            lunch_duration
           };
         }
       }
@@ -328,10 +512,20 @@ exports.getHistory = async (req, res) => {
 
         const [h, m, s] = working_hours.split(":").map(Number);
         totalSeconds += h * 3600 + m * 60 + s;
+
+        if (r.break_start && r.break_end) break_duration = calculateDuration(r.break_start, r.break_end);
+        if (r.lunch_start && r.lunch_end) lunch_duration = calculateDuration(r.lunch_start, r.lunch_end);
       }
 
-
-      return { date: dateStr, time_in, time_out, working_hours, status, isPresent };
+      return { date: dateStr, 
+        time_in, 
+        time_out, 
+        working_hours, 
+        status, 
+        isPresent,
+        break_duration,
+        lunch_duration
+      };
     });
 
     // Average WH
@@ -379,12 +573,79 @@ exports.getHistory = async (req, res) => {
       }
 
       finalRecords = allFormatted.filter(r => r.date >= startStr && r.date <= todayStr);
-    }
+    
+      } 
+      // ---------- YEARLY (Specific Year + Month) ---------- //
+      else if (period === "yearly") {
+        const year = parseInt(req.query.year);
+        const month = parseInt(req.query.month); // 1–12
+
+        if (!year || !month || month < 1 || month > 12) {
+          return res.status(400).json({ message: "Please provide valid year & month" });
+        }
+
+        // ❗ NEW CHECK — requested month is before joining
+        const requestedStart = new Date(year, month - 1, 1);
+        if (requestedStart < joiningDate) {
+          return res.status(200).json({
+            message: "No data available before joining date",
+            emp_id: user.emp_id,
+            name: user.name,
+            joining_date: joiningStr,
+            startDate: null,
+            endDate: null,
+            periodType: period,
+            records: []
+          });
+        }
+
+        // --- Utility ---
+        const formatYMD = (y, m, d) =>
+          `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+
+        // Days in requested month (timezone safe)
+        const daysInMonth = new Date(year, month, 0).getDate();
+
+        let startS = formatYMD(year, month, 1);
+        let endS = formatYMD(year, month, daysInMonth);
+
+        const startDateObj = new Date(startS);
+        const endDateObj = new Date(endS);
+
+        // Trim based on joining date
+        if (startDateObj < joiningDate) {
+          startS = joiningStr;
+        }
+
+        // Trim based on today
+        if (endDateObj > today) {
+          endS = todayStr;
+        }
+
+        // ⭐ REQUIRED FIX — now yearly returns correct startDate
+        startStr = startS;
+
+        finalRecords = allFormatted.filter(
+          (r) => r.date >= startS && r.date <= endS
+        );
+      }
+
+
+
 
 
     const startDate = startStr;
     const endDate = todayStr;
 
+    let totalPresent = 0;
+    let totalAbsent = 0;
+    let totalNotSet = 0;
+
+    finalRecords.forEach(r => {
+      if (r.isPresent === true) totalPresent++;
+      else if (r.isPresent === false) totalAbsent++;
+      else if (r.isPresent === "not set") totalNotSet++;
+    });
     return res.json({
       emp_id: user.emp_id,
       name: user.name,
@@ -393,7 +654,10 @@ exports.getHistory = async (req, res) => {
       endDate,
       periodType: period,
       records: finalRecords,
-      averageWorkingHours: avg
+      averageWorkingHours: avg,
+      totalPresent,
+      totalAbsent,
+      totalNotSet
     });
 
   } catch (err) {
@@ -615,7 +879,7 @@ exports.getAttendanceReport = async (req, res) => {
 
    // console.log("1️⃣  Incoming Request:", { empId, periodType });
 
-    if (!periodType || !["daily", "weekly", "monthly"].includes(periodType)) {
+    if (!periodType || !["daily", "weekly", "monthly", "yearly"].includes(periodType)) {
       //console.log("❌ Invalid periodType");
       return res.status(400).json({ message: "Invalid periodType" });
     }
@@ -670,7 +934,40 @@ exports.getAttendanceReport = async (req, res) => {
 
       // console.log("StartDate =", startDate.toLocaleDateString("en-CA"));
       // console.log("EndDate   =", endDate.toLocaleDateString("en-CA"));
+    }else if (periodType === "yearly") {
+      const year = parseInt(req.query.year);
+      const month = parseInt(req.query.month); // 1-12
+
+      if (!year || !month || month < 1 || month > 12) {
+        return res.status(400).json({ message: "Please provide valid year & month" });
+      }
+
+      let startS = `${year}-${String(month).padStart(2, "0")}-01`;
+      let endS = `${year}-${String(month).padStart(2, "0")}-${new Date(year, month, 0).getDate()}`;
+
+      // ✅ Check if requested period is before joining date
+      if (new Date(endS) < joiningDate) {
+        return res.status(200).json({
+          message: "No data available before joining date",
+          empId: user.emp_id,
+          name: user.name,
+          joining_date: joiningStr,
+          periodType,
+          startDate: null,
+          endDate: null,
+          records: []
+        });
+      }
+
+      // Adjust for joining date
+      if (new Date(startS) < joiningDate) startS = joiningStr;
+      // Adjust for today
+      if (new Date(endS) > today) endS = todayStr;
+
+      startDate = new Date(startS);
+      endDate = new Date(endS);
     }
+
 
     // console.log("4️⃣  FINAL Date Range:", {
     //   startDate: startDate.toISOString().slice(0, 10),
@@ -761,6 +1058,16 @@ exports.getAttendanceReport = async (req, res) => {
         });
       }
 
+      let break_duration = "00:00:00";
+      let lunch_duration = "00:00:00";
+
+      if (entry && entry.break_start && entry.break_end) {
+        break_duration = calculateDuration(entry.break_start, entry.break_end);
+      }
+
+      if (entry && entry.lunch_start && entry.lunch_end) {
+        lunch_duration = calculateDuration(entry.lunch_start, entry.lunch_end);
+      }
 
 
       fullRecords.push({
@@ -770,6 +1077,8 @@ exports.getAttendanceReport = async (req, res) => {
         working_hours,
         status,
         isPresent,
+        break_duration,
+        lunch_duration,
         User: {
           name: user.name,
           emp_id: user.emp_id,

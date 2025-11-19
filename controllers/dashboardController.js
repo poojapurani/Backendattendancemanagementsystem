@@ -121,7 +121,7 @@ exports.getAdminReport = async (req, res) => {
       });
 
       // const presentCount = records.filter(r => r.status !== "absent").length;
-      const presentCount = records.filter(r =>r.status === "present" ||r.status === "Late" ||r.status === "half-day").length;
+      const presentCount = records.filter(r =>r.status === "present" ||r.status === "late" ||r.status === "half-day").length;
 
       const absentCount = (records.length - presentCount) < 0 ? 0 : (records.length - presentCount);
 

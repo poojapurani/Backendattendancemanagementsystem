@@ -8,7 +8,7 @@ dotenv.config();
 const app = express();
 
 const corsOptions = {
-  origin: "https://00952ee7-5d76-4f1d-bd10-fa9f26f4d776-00-v6w4h6hevza4.sisko.replit.dev",
+  origin: "https://6d91a1f4-b7e7-4a13-bcf0-2ad35c8b7342-00-gqxxvbi5pcrb.pike.replit.dev",
   methods: "GET,HEAD,PUT,PATCH,POST,DELETE",
   credentials: true,
 };
@@ -35,10 +35,12 @@ sequelize.sync()
 const authRoutes = require("./routes/authRoutes");
 const attendanceRoutes = require("./routes/attendanceRoutes");
 const dashboardRoutes = require("./routes/dashboardRoutes");
+const todoRoutes = require("./routes/todoRoutes");
 
 app.use("/api/auth", authRoutes);
 app.use("/api/attendance", attendanceRoutes);
 app.use("/api/dashboard", dashboardRoutes);
+app.use("/api/todos", todoRoutes);
 
 // Home
 app.get("/", (req, res) => {

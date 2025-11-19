@@ -11,6 +11,18 @@ router.put("/punchout", verifyToken, verifyUser, attendanceController.punchOut);
 //user report for a specific user daily, weekly, monthly
 router.get("/history", verifyToken, verifyUser, attendanceController.getHistory);
 
+
+router.get("/today-status", verifyToken, attendanceController.getTodayAttendanceStatus);
+
+
+// Break & Lunch routes (User only)
+router.put("/break/start", verifyToken, verifyUser, attendanceController.startBreak);
+router.put("/break/end", verifyToken, verifyUser, attendanceController.endBreak);
+router.put("/lunch/start", verifyToken, verifyUser, attendanceController.startLunch);
+router.put("/lunch/end", verifyToken, verifyUser, attendanceController.endLunch);
+
+
+
 // Admin routes
 //user report according to emp id, daily, weekly, monthly
 router.get("/report/:empId",verifyToken,verifyAdmin,attendanceController.getAttendanceReport); //http://localhost:5000/api/attendance/report/EMP002?periodType=daily

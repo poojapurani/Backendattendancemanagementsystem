@@ -183,49 +183,49 @@ exports.login = async (req, res) => {
 };
 
 // 📌 Get Today's Attendance Status for a User
-exports.getTodayAttendanceStatus = async (req, res) => {
-  try {
-    // emp_id from token — NOT from request params
-    const emp_id = req.user.emp_id;
+// exports.getTodayAttendanceStatus = async (req, res) => {
+//   try {
+//     // emp_id from token — NOT from request params
+//     const emp_id = req.user.emp_id;
 
-    if (!emp_id) {
-      return res.status(400).json({ message: "emp_id missing from token" });
-    }
+//     if (!emp_id) {
+//       return res.status(400).json({ message: "emp_id missing from token" });
+//     }
 
-    // Find Employee
-    const user = await User.findOne({ where: { emp_id } });
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
+//     // Find Employee
+//     const user = await User.findOne({ where: { emp_id } });
+//     if (!user) {
+//       return res.status(404).json({ message: "User not found" });
+//     }
 
-    // Get today's date
-    const today = new Date().toISOString().split("T")[0];
+//     // Get today's date
+//     const today = new Date().toISOString().split("T")[0];
 
-    // Fetch today's attendance
-    const attendance = await Attendance.findOne({
-      where: { emp_id, date: today }
-    });
+//     // Fetch today's attendance
+//     const attendance = await Attendance.findOne({
+//       where: { emp_id, date: today }
+//     });
 
-    const attendanceStatus = {
-      punched_in: attendance?.time_in ? true : false,
-      punched_out: attendance?.time_out ? true : false,
-      status: attendance?.status || "not set",
-      time_in: attendance?.time_in || null,
-      time_out: attendance?.time_out || null,
-      working_hours: attendance?.working_hours || "00:00:00"
-    };
+//     const attendanceStatus = {
+//       punched_in: attendance?.time_in ? true : false,
+//       punched_out: attendance?.time_out ? true : false,
+//       status: attendance?.status || "not set",
+//       time_in: attendance?.time_in || null,
+//       time_out: attendance?.time_out || null,
+//       working_hours: attendance?.working_hours || "00:00:00"
+//     };
 
-    res.json({
-      emp_id,
-      date: today,
-      attendanceStatus
-    });
+//     res.json({
+//       emp_id,
+//       date: today,
+//       attendanceStatus
+//     });
 
-  } catch (err) {
-    console.error("Attendance Status Error:", err);
-    res.status(500).json({ message: "Internal server error" });
-  }
-};
+//   } catch (err) {
+//     console.error("Attendance Status Error:", err);
+//     res.status(500).json({ message: "Internal server error" });
+//   }
+// };
 
 /*----------------------------------------------------
     GET ALL USERS (ADMIN)

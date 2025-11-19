@@ -11,7 +11,7 @@ router.post("/register", verifyToken, verifyAdmin, authController.register);
 router.post("/login", authController.login);
 
 // 📌 Attendance status route 
-router.get("/today-status", verifyToken, authController.getTodayAttendanceStatus);
+// router.get("/today-status", verifyToken, authController.getTodayAttendanceStatus);
 
 
 
