@@ -31,9 +31,19 @@ const Todo = sequelize.define(
     },
 
     status: {
-        type: DataTypes.ENUM("pending", "completed"),
+        type: DataTypes.ENUM("not_started", "started", "paused", "completed"),
         defaultValue: "pending",
     },
+    start_time: {
+        type: DataTypes.TIME,
+        allowNull: true,
+    },
+    total_tracked_time: {
+        type: DataTypes.TIME, // store seconds
+        allowNull: true,
+        defaultValue: "00:00:00"
+    },
+
     date: {
         type: DataTypes.DATEONLY,
         allowNull: false,
