@@ -10,7 +10,10 @@ router.post("/punchin", verifyToken, verifyUser, attendanceController.punchIn);
 router.put("/punchout", verifyToken, verifyUser, attendanceController.punchOut);
 //user report for a specific user daily, weekly, monthly
 router.get("/history", verifyToken, verifyUser, attendanceController.getHistory);
+router.post("/work-start", verifyToken, verifyUser, attendanceController.startWork);
+router.post("/work-end", verifyToken, verifyUser, attendanceController.endWork);
 
+router.get("/daily-log", verifyToken, verifyUser, attendanceController.getDailyLog);
 
 router.get("/today-status", verifyToken, attendanceController.getTodayAttendanceStatus);
 

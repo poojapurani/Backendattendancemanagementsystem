@@ -14,10 +14,10 @@ async function getNextSrNo(emp_id) {
 exports.addTodo = async (req, res) => {
   try {
     const emp_id = req.user.emp_id;
-    const { description, priority, date } = req.body;
+    const { title, description, priority, date } = req.body;
 
-    if (!description || !priority) {
-      return res.status(400).json({ message: "description & priority required" });
+    if (!title || !description || !priority) {
+      return res.status(400).json({ message: "title, description & priority required" });
     }
 
     const sr_no = await getNextSrNo(emp_id);
@@ -25,17 +25,29 @@ exports.addTodo = async (req, res) => {
     const todo = await Todo.create({
       emp_id,
       sr_no,
+      title,
       description,
       priority,
-      date: date || new Date().toISOString().slice(0, 10) // YYYY-MM-DD
+      status: "not_started",
+      total_tracked_time: "00:00:00",
+      start_time: null,
+      date: date || new Date().toISOString().slice(0, 10),
+      assigned_by: null,
+      remark: null
     });
 
-    res.status(201).json({ message: "Todo added", todo });
+    // Remove key_learning from response
+    const clean = todo.toJSON();
+    delete clean.key_learning;
+
+    res.status(201).json({ message: "Todo added", todo: clean });
+
   } catch (error) {
     console.log(error);
     res.status(500).json({ message: "Server error", error });
   }
 };
+
 
 exports.getTodos = async (req, res) => {
   try {
@@ -44,6 +56,7 @@ exports.getTodos = async (req, res) => {
     const todos = await Todo.findAll({
       where: { emp_id },
       order: [["sr_no", "ASC"]],
+      attributes: { exclude: ["key_learning"]}
     });
 
     res.json({ todos });
@@ -55,57 +68,47 @@ exports.getTodos = async (req, res) => {
 exports.updateTodo = async (req, res) => {
   try {
     const emp_id = req.user.emp_id;
-    const { id } = req.params;
-    const { description, priority, date } = req.body;
+    const { sr_no } = req.params;
+    const { title, description, priority, date, assigned_by, remark } = req.body;
 
-    const todo = await Todo.findOne({ where: { id, emp_id } });
+    const todo = await Todo.findOne({ where: { sr_no, emp_id } });
 
     if (!todo) return res.status(404).json({ message: "Todo not found" });
 
+    todo.title = title ?? todo.title;
     todo.description = description ?? todo.description;
     todo.priority = priority ?? todo.priority;
     todo.date = date ?? todo.date;
+    todo.assigned_by = assigned_by ?? todo.assigned_by;
+    todo.remark = remark ?? todo.remark;
 
     await todo.save();
 
-    res.json({ message: "Todo updated", todo });
+    const clean = todo.toJSON();
+    delete clean.key_learning;
+
+    res.json({ message: "Todo updated", todo: clean });
+
   } catch (error) {
     res.status(500).json({ message: "Server error", error });
   }
 };
 
-// function diffSeconds(start, end) {
-//   return Math.floor((end - start) / 1000);
-// }
-
-// function formatTime(seconds) {
-//   const h = Math.floor(seconds / 3600).toString().padStart(2, "0");
-//   const m = Math.floor((seconds % 3600) / 60).toString().padStart(2, "0");
-//   const s = Math.floor(seconds % 60).toString().padStart(2, "0");
-//   return `${h}:${m}:${s}`;
-// }
-
-
 exports.toggleTodoStatus = async (req, res) => {
   try {
-    console.log("REQ BODY:", req.body);   // Debug
-    console.log("REQ PARAMS:", req.params);
-
     const emp_id = req.user.emp_id;
-    const { id } = req.params;
+    const { sr_no } = req.params;
     const { action } = req.body;
 
     if (!action) {
       return res.status(400).json({ message: "Action is required (start, pause, complete)" });
     }
 
-    const todo = await Todo.findOne({ where: { id, emp_id } });
+    const todo = await Todo.findOne({ where: { sr_no, emp_id } });
 
     if (!todo) {
       return res.status(404).json({ message: "Todo not found" });
     }
-
-    console.log("TODO BEFORE:", todo.dataValues);
 
     // Convert HH:MM:SS → seconds
     const toSeconds = (t) => {
@@ -114,7 +117,6 @@ exports.toggleTodoStatus = async (req, res) => {
       return h * 3600 + m * 60 + s;
     };
 
-    // Convert seconds → HH:MM:SS
     const toHHMMSS = (sec) => {
       const h = String(Math.floor(sec / 3600)).padStart(2, "0");
       const m = String(Math.floor((sec % 3600) / 60)).padStart(2, "0");
@@ -123,45 +125,43 @@ exports.toggleTodoStatus = async (req, res) => {
     };
 
     const now = new Date();
-    const currentTime = now.toTimeString().split(" ")[0]; // HH:MM:SS
+    const currentTime = now.toTimeString().split(" ")[0];
 
-    // ------------------------------------
-    // ACTION = START
-    // ------------------------------------
+    // START
     if (action === "start") {
+      if (!todo.start_time) {
+        todo.start_time = currentTime;
+      }
+
       todo.status = "start";
-      todo.start_time = currentTime;
     }
 
-    // ------------------------------------
-    // ACTION = PAUSE
-    // ------------------------------------
+    // PAUSE
     else if (action === "pause") {
 
       if (!todo.start_time) {
-        return res.status(400).json({ message: "Cannot pause: task is not started" });
+        return res.status(400).json({ message: "Cannot pause: task not started yet" });
       }
 
       const start = new Date(`1970-01-01 ${todo.start_time}`);
       const end = new Date(`1970-01-01 ${currentTime}`);
-
       const diffSeconds = (end - start) / 1000;
 
       const previous = toSeconds(todo.total_tracked_time);
       const updated = previous + diffSeconds;
 
       todo.total_tracked_time = toHHMMSS(updated);
-      todo.start_time = null;
+      //todo.start_time = null;
       todo.status = "pause";
     }
 
-    // ------------------------------------
-    // ACTION = COMPLETE
-    // ------------------------------------
+    // COMPLETE
     else if (action === "complete") {
 
+      if (!todo.start_time) {
+        return res.status(400).json({ message: "Cannot complete: task not started yet" });
+      }
       if (todo.start_time) {
-        // Calculate last running time
         const start = new Date(`1970-01-01 ${todo.start_time}`);
         const end = new Date(`1970-01-01 ${currentTime}`);
         const diffSeconds = (end - start) / 1000;
@@ -173,33 +173,115 @@ exports.toggleTodoStatus = async (req, res) => {
       }
 
       todo.status = "complete";
-      todo.start_time = null;
+      //todo.start_time = null;
     }
 
     else {
-      return res.status(400).json({ message: "Invalid action. Use start, pause, complete" });
+      return res.status(400).json({ message: "Invalid action" });
     }
 
     await todo.save();
 
-    console.log("TODO AFTER:", todo.dataValues);
+    const clean = todo.toJSON();
+    delete clean.key_learning;
 
-    res.json({ message: "Status updated", todo });
+    res.json({ message: "Status updated", todo: clean });
+
 
   } catch (error) {
-    console.error("FULL ERROR:", error); // Logs full error
+    console.error(error);
+    res.status(500).json({ message: "Server error", error });
+  }
+};
+
+
+// Add Key Learning / Notes
+
+
+exports.addKeyLearning = async (req, res) => {
+  try {
+    const emp_id = req.user.emp_id;
+    const { notes } = req.body;
+    if (!notes) return res.status(400).json({ message: "Notes required" });
+
+    const today = new Date().toISOString().slice(0, 10);
+
+    // Check if a todo exists for today to store key_learning
+    const todo = await Todo.findOne({ where: { emp_id, date: today } });
+
+    if (todo) {
+      todo.key_learning = notes;
+      await todo.save();
+    } else {
+      await Todo.create({ emp_id, date: today, key_learning: notes, sr_no: 1, title: "N/A", description: "N/A", priority: "Low", status: "not_started", total_tracked_time: "00:00:00" });
+    }
+
+    res.json({ message: "Key learnings saved", emp_id, date: today, key_learning: notes });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error", error });
+  }
+};
+
+// Get Key Learnings
+exports.getKeyLearning = async (req, res) => {
+  try {
+    const emp_id = req.user.emp_id;
+    const today = new Date().toISOString().slice(0, 10);
+
+    const todo = await Todo.findOne({ where: { emp_id, date: today } });
+
+    res.json({
+      emp_id,
+      date: today,
+      key_learning: todo?.key_learning || ""
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error", error });
+  }
+};
+
+exports.addRemark = async (req, res) => {
+  try {
+    const emp_id = req.user.emp_id;
+    const { sr_no } = req.params;
+    const { remark } = req.body;
+
+    if (!remark || remark.trim() === "") {
+      return res.status(400).json({ message: "Remark is required" });
+    }
+
+    const todo = await Todo.findOne({ where: { emp_id, sr_no } });
+
+    if (!todo) {
+      return res.status(404).json({ message: "Todo not found" });
+    }
+
+    // Save remark
+    todo.remark = remark;
+    await todo.save();
+
+    res.json({
+      message: "Remark added successfully",
+      todo
+    });
+
+  } catch (error) {
+    console.error(error);
     res.status(500).json({ message: "Server error", error });
   }
 };
 
 
 
+
 exports.deleteTodo = async (req, res) => {
   try {
     const emp_id = req.user.emp_id;
-    const { id } = req.params;
+    const { sr_no } = req.params;
 
-    const deleted = await Todo.destroy({ where: { id, emp_id } });
+    const deleted = await Todo.destroy({ where: { sr_no, emp_id } });
 
     if (!deleted) return res.status(404).json({ message: "Todo not found" });
 
@@ -208,3 +290,4 @@ exports.deleteTodo = async (req, res) => {
     res.status(500).json({ message: "Server error", error });
   }
 };
+

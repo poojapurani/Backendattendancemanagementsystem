@@ -5,8 +5,14 @@ const todoController = require("../controllers/todoController");
 
 router.post("/add", authTodo, todoController.addTodo);
 router.get("/get", authTodo, todoController.getTodos);
-router.put("/update/:id", authTodo, todoController.updateTodo);
-router.put("/status/:id", authTodo, todoController.toggleTodoStatus);
-router.delete("/delete/:id", authTodo, todoController.deleteTodo);
+router.put("/update/:sr_no", authTodo, todoController.updateTodo);
+router.put("/status/:sr_no", authTodo, todoController.toggleTodoStatus);
+
+router.post("/keylearning", authTodo, todoController.addKeyLearning);
+router.get("/keylearning", authTodo, todoController.getKeyLearning)
+
+router.post("/remark/:sr_no", authTodo, todoController.addRemark);
+
+router.delete("/delete/:sr_no", authTodo, todoController.deleteTodo);
 
 module.exports = router;

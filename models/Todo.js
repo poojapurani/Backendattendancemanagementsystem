@@ -20,6 +20,11 @@ const Todo = sequelize.define(
         allowNull: false,
     },
 
+    title: { 
+      type: DataTypes.STRING, 
+      allowNull: false 
+    },
+
     description: {
         type: DataTypes.STRING,
         allowNull: false,
@@ -32,7 +37,7 @@ const Todo = sequelize.define(
 
     status: {
         type: DataTypes.ENUM("not_started", "started", "paused", "completed"),
-        defaultValue: "pending",
+        defaultValue: "not_started",
     },
     start_time: {
         type: DataTypes.TIME,
@@ -48,6 +53,23 @@ const Todo = sequelize.define(
         type: DataTypes.DATEONLY,
         allowNull: false,
     },
+    assigned_by: { 
+      type: DataTypes.STRING, 
+      allowNull: true, 
+      defaultValue: null 
+    },
+    remark: { 
+      type: DataTypes.TEXT, 
+      allowNull: true, 
+      defaultValue: null
+     },
+     
+    key_learning: {
+        type: DataTypes.TEXT,
+        allowNull: true,
+        defaultValue: null
+    },
+
 
   },
   {

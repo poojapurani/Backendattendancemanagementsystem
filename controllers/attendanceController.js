@@ -1,5 +1,8 @@
 const Attendance = require("../models/Attendance");
 const User = require("../models/User");
+const Todo = require("../models/Todo");
+
+
 // Punch In
 const { Op } = require("sequelize");
 
@@ -106,6 +109,58 @@ exports.punchIn = async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Server Error", success: false });
+  }
+};
+
+exports.startWork = async (req, res) => {
+  try {
+    const emp_id = req.user.emp_id;
+    const today = new Date().toISOString().slice(0, 10);
+    const now = new Date().toTimeString().split(" ")[0];
+
+    let record = await Attendance.findOne({ where: { emp_id, date: today } });
+    if (!record) {
+      record = await Attendance.create({ emp_id, date: today, work_start: now });
+      return res.json({ message: "Work started", work_start: now });
+    }
+
+    if (record.work_start) {
+      return res.status(400).json({ message: "Work already started", work_start: record.work_start });
+    }
+
+    record.work_start = now;
+    await record.save();
+    res.json({ message: "Work started", work_start: now });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error", error });
+  }
+};
+
+
+exports.endWork = async (req, res) => {
+  try {
+    const emp_id = req.user.emp_id;
+    const today = new Date().toISOString().slice(0, 10);
+    const now = new Date().toTimeString().split(" ")[0];
+
+    const record = await Attendance.findOne({ where: { emp_id, date: today } });
+    if (!record || !record.work_start) {
+      return res.status(400).json({ message: "Work has not started yet" });
+    }
+
+    if (record.work_end) {
+      return res.status(400).json({ message: "Work already ended", work_end: record.work_end });
+    }
+
+    record.work_end = now;
+    await record.save();
+    res.json({ message: "Work ended", work_end: now });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error", error });
   }
 };
 
@@ -285,9 +340,40 @@ exports.punchOut = async (req, res) => {
       return res.status(400).json({ message: "Already punched out today!" });
     }
 
+
+    // 🚫 Normal Break is active
+    if (record.break_start && !record.break_end) {
+      return res.status(400).json({
+        message: "Normal break is running. End it before punch out!"
+      });
+    }
+
+    // 🚫 Lunch Break is active
+    if (record.lunch_start && !record.lunch_end) {
+      return res.status(400).json({
+        message: "Lunch break is running. End it before punch out!"
+      });
+    }
+
+    // 🚫 TODO RUNNING (status = start)
+    const runningTodo = await Todo.findOne({
+      where: {
+        emp_id,
+        status: "start"
+      }
+    });
+
+    if (runningTodo) {
+      return res.status(400).json({
+        message: "You have a running task. Pause or complete the todo before punch out!",
+        sr_no: runningTodo.sr_no,
+        title: runningTodo.title
+      });
+    }
+
     // Working hours calculation
 
-   const timeIn = new Date(`${today}T${record.time_in}`);
+    const timeIn = new Date(`${today}T${record.time_in}`);
     let diffMs = now - timeIn;
 
     // 🔹 Subtract breaks if present
@@ -576,6 +662,7 @@ exports.getHistory = async (req, res) => {
     
       } 
       // ---------- YEARLY (Specific Year + Month) ---------- //
+
       else if (period === "yearly") {
         const year = parseInt(req.query.year);
         const month = parseInt(req.query.month); // 1–12
@@ -584,51 +671,37 @@ exports.getHistory = async (req, res) => {
           return res.status(400).json({ message: "Please provide valid year & month" });
         }
 
-        // ❗ NEW CHECK — requested month is before joining
-        const requestedStart = new Date(year, month - 1, 1);
-        if (requestedStart < joiningDate) {
+        // Requested month start and end
+        let startS = `${year}-${String(month).padStart(2, "0")}-01`;
+        let endS = `${year}-${String(month).padStart(2, "0")}-${new Date(year, month, 0).getDate()}`;
+
+        // If requested month **ends before joining** → truly no data
+        if (new Date(endS) < joiningDate) {
           return res.status(200).json({
             message: "No data available before joining date",
             emp_id: user.emp_id,
             name: user.name,
             joining_date: joiningStr,
+            periodType: period,
             startDate: null,
             endDate: null,
-            periodType: period,
             records: []
           });
         }
 
-        // --- Utility ---
-        const formatYMD = (y, m, d) =>
-          `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+        // Trim start if requested start is before joining
+        if (new Date(startS) < joiningDate) startS = joiningStr;
 
-        // Days in requested month (timezone safe)
-        const daysInMonth = new Date(year, month, 0).getDate();
+        // Trim end if requested end is after today
+        if (new Date(endS) > today) endS = todayStr;
 
-        let startS = formatYMD(year, month, 1);
-        let endS = formatYMD(year, month, daysInMonth);
-
-        const startDateObj = new Date(startS);
-        const endDateObj = new Date(endS);
-
-        // Trim based on joining date
-        if (startDateObj < joiningDate) {
-          startS = joiningStr;
-        }
-
-        // Trim based on today
-        if (endDateObj > today) {
-          endS = todayStr;
-        }
-
-        // ⭐ REQUIRED FIX — now yearly returns correct startDate
         startStr = startS;
 
         finalRecords = allFormatted.filter(
           (r) => r.date >= startS && r.date <= endS
         );
       }
+
 
 
 
@@ -1117,3 +1190,150 @@ exports.getAttendanceReport = async (req, res) => {
   }
 };
 
+// ----------------- Utilities -----------------
+
+// Convert HH:MM:SS → seconds
+const toSeconds = t => {
+  if (!t) return 0;
+  const [h, m, s] = t.split(":").map(Number);
+  return h * 3600 + m * 60 + s;
+};
+
+// Convert seconds → HH:MM
+const secondsToHHMM = sec => {
+  const h = Math.floor(sec / 3600).toString().padStart(2, "0");
+  const m = Math.floor((sec % 3600) / 60).toString().padStart(2, "0");
+  return `${h}:${m}`;
+};
+
+// Calculate duration between HH:MM:SS strings
+// const calculateDuration = (start, end) => {
+//   const startSec = toSeconds(start);
+//   const endSec = toSeconds(end);
+//   return secondsToHHMM(Math.max(0, endSec - startSec));
+// };
+
+// Get next working day (skip weekends)
+const nextWorkingDay = (date = new Date()) => {
+  const d = new Date(date);
+  d.setDate(d.getDate() + 1);
+  while (d.getDay() === 0 || d.getDay() === 6) {
+    d.setDate(d.getDate() + 1);
+  }
+  return d.toISOString().split("T")[0];
+};
+
+// ----------------- Daily Log API -----------------
+exports.getDailyLog = async (req, res) => {
+  try {
+    const emp_id = req.user.emp_id;
+
+    // Fetch user
+    const user = await User.findOne({ where: { emp_id } });
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    const today = new Date();
+    const todayStr = today.toISOString().split("T")[0];
+
+    // Fetch todos for today
+    const todos = await Todo.findAll({
+      where: { emp_id, date: todayStr },
+      order: [["sr_no", "ASC"]],
+    });
+
+    const completed = [];
+    const pending = [];
+    const nextDay = [];
+    const keyLearnings = []; // collect key learnings from todos
+
+    todos.forEach(todo => {
+      const timeSpent = todo.total_tracked_time
+        ? secondsToHHMM(toSeconds(todo.total_tracked_time))
+        : "00:00";
+
+      if (todo.status === "complete") {
+        completed.push({
+          sr_no: todo.sr_no,
+          title: todo.title,
+          description: todo.description,
+          assigned_by: todo.assigned_by || "N/A",
+          time_spent: timeSpent,
+          remark: todo.remark || ""
+        });
+        if (todo.key_learning) keyLearnings.push(todo.key_learning);
+      } else if (todo.status === "pause") {
+        pending.push({
+          sr_no: todo.sr_no,
+          title: todo.title,
+          description: todo.description,
+          assigned_by: todo.assigned_by || "N/A",
+          reason_for_delay: todo.remark || "",
+          planned_completion_date: nextWorkingDay()
+        });
+        if (todo.key_learning) keyLearnings.push(todo.key_learning);
+      } else if (todo.status === "not_started") {
+        nextDay.push({
+          sr_no: todo.sr_no,
+          title: todo.title,
+          description: todo.description,
+          assigned_to: emp_id,
+          priority: todo.priority
+        });
+      }
+    });
+
+    // Fetch today's attendance for punch-in/out & breaks
+    const attendance = await Attendance.findOne({ where: { emp_id, date: todayStr } });
+    const punchIn = attendance?.time_in || null;
+    const punchOut = attendance?.time_out || null;
+    const workStart = attendance?.work_start || null;
+    const workEnd = attendance?.work_end || null;
+
+    const breaks_log = [
+      {
+        sr_no: 1,
+        break_type: "Lunch Break",
+        start_time: attendance?.lunch_start || "",
+        end_time: attendance?.lunch_end || "",
+        duration: attendance?.lunch_start && attendance?.lunch_end
+          ? calculateDuration(attendance.lunch_start, attendance.lunch_end)
+          : "00:00"
+      },
+      {
+        sr_no: 2,
+        break_type: "Normal Break",
+        start_time: attendance?.break_start || "",
+        end_time: attendance?.break_end || "",
+        duration: attendance?.break_start && attendance?.break_end
+          ? calculateDuration(attendance.break_start, attendance.break_end)
+          : "00:00"
+      }
+    ];
+
+    const dailyLog = {
+      header: {
+
+        "Intern ID": emp_id,
+        "Intern Name": user.name,
+        "Department": user.department ,
+        "Supervisor Name": user.supervisor_name || null,
+        "Date": todayStr,
+        "Punch in time": punchIn,
+        "Work Start": workStart,
+        "Punch out time": punchOut,
+        "Work End": workEnd
+      },
+      tasks_completed_today: completed,
+      pending_tasks: pending,
+      next_day_todo: nextDay,
+      breaks_log,
+      key_learnings_notes: keyLearnings.join("\n") // all key learnings combined
+    };
+
+    res.json({ dailyLog });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error", error });
+  }
+};

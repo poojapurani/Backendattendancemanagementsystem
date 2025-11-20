@@ -53,7 +53,18 @@ const Attendance = sequelize.define(
     lunch_end: {
       type: DataTypes.TIME,
       allowNull: true,
+    },
+    work_start: {
+      type: DataTypes.TIME,
+      allowNull: true,
+      defaultValue: null
+    },
+    work_end: {
+      type: DataTypes.TIME,
+      allowNull: true,
+      defaultValue: null
     }
+
   },
   {
     timestamps: true, // createdAt and updatedAt
