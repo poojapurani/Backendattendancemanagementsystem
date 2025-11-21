@@ -8,8 +8,8 @@ router.get("/get", authTodo, todoController.getTodos);
 router.put("/update/:sr_no", authTodo, todoController.updateTodo);
 router.put("/status/:sr_no", authTodo, todoController.toggleTodoStatus);
 
-router.post("/keylearning", authTodo, todoController.addKeyLearning);
-router.get("/keylearning", authTodo, todoController.getKeyLearning)
+// router.post("/keylearning", authTodo, todoController.addKeyLearning);
+// router.get("/keylearning", authTodo, todoController.getKeyLearning)
 
 router.post("/remark/:sr_no", authTodo, todoController.addRemark);
 

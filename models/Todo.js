@@ -36,7 +36,7 @@ const Todo = sequelize.define(
     },
 
     status: {
-        type: DataTypes.ENUM("not_started", "started", "paused", "completed"),
+        type: DataTypes.ENUM("not_started", "start", "pause", "complete"),
         defaultValue: "not_started",
     },
     start_time: {
@@ -64,11 +64,7 @@ const Todo = sequelize.define(
       defaultValue: null
      },
      
-    key_learning: {
-        type: DataTypes.TEXT,
-        allowNull: true,
-        defaultValue: null
-    },
+  
 
 
   },

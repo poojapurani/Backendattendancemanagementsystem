@@ -1,5 +1,29 @@
 const Todo = require("../models/Todo");
 const User = require("../models/User");
+const Attendance = require("../models/Attendance");
+
+
+// Check if user punched in today
+async function isUserPunchedIn(emp_id) {
+  const today = new Date().toISOString().split("T")[0];
+
+  const attendance = await Attendance.findOne({
+    where: { emp_id, date: today }
+  });
+
+  return attendance?.time_in ? true : false;
+}
+
+// Check if user is punched out today
+async function isUserPunchedOut(emp_id) {
+  const today = new Date().toISOString().split("T")[0];
+
+  const attendance = await Attendance.findOne({
+    where: { emp_id, date: today }
+  });
+
+  return attendance?.time_out ? true : false;
+}
 
 // 📌 Auto calculate sr_no per user
 async function getNextSrNo(emp_id) {
@@ -15,6 +39,18 @@ exports.addTodo = async (req, res) => {
   try {
     const emp_id = req.user.emp_id;
     const { title, description, priority, date } = req.body;
+
+    if (!(await isUserPunchedIn(emp_id))) {
+      return res.status(403).json({
+        message: "You must punch in before adding todos."
+      });
+    }
+
+    if (await isUserPunchedOut(emp_id)) {
+      return res.status(403).json({
+        message: "You are already punched out. Cannot add new todos."
+      });
+    }
 
     if (!title || !description || !priority) {
       return res.status(400).json({ message: "title, description & priority required" });
@@ -53,17 +89,30 @@ exports.getTodos = async (req, res) => {
   try {
     const emp_id = req.user.emp_id;
 
+    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+
     const todos = await Todo.findAll({
       where: { emp_id },
       order: [["sr_no", "ASC"]],
-      attributes: { exclude: ["key_learning"]}
+      attributes: { exclude: ["key_learning"] }
     });
 
-    res.json({ todos });
+    const filtered = todos.filter(todo => {
+      const todoDate = todo.date; // already YYYY-MM-DD because DATEONLY
+
+      // Show all if today
+      if (todoDate === today) return true;
+
+      // Previous dates → hide completed
+      return todo.status !== "complete";
+    });
+
+    res.json({ todos: filtered });
   } catch (error) {
     res.status(500).json({ message: "Server error", error });
   }
 };
+
 
 exports.updateTodo = async (req, res) => {
   try {
@@ -72,6 +121,17 @@ exports.updateTodo = async (req, res) => {
     const { title, description, priority, date, assigned_by, remark } = req.body;
 
     const todo = await Todo.findOne({ where: { sr_no, emp_id } });
+
+    if (!(await isUserPunchedIn(emp_id))) {
+      return res.status(403).json({
+        message: "You must punch in before updating todos."
+      });
+    }
+    if (await isUserPunchedOut(emp_id)) {
+      return res.status(403).json({
+        message: "You are already punched out. Cannot update todo."
+      });
+    }
 
     if (!todo) return res.status(404).json({ message: "Todo not found" });
 
@@ -99,6 +159,18 @@ exports.toggleTodoStatus = async (req, res) => {
     const emp_id = req.user.emp_id;
     const { sr_no } = req.params;
     const { action } = req.body;
+
+    if (!(await isUserPunchedIn(emp_id))) {
+      return res.status(403).json({
+        message: "You must punch in before starting/pausing/completing tasks."
+      });
+    }
+    // ❗ BLOCK if punched out
+    if (await isUserPunchedOut(emp_id)) {
+      return res.status(403).json({
+        message: "You are already punched out. Cannot start/pause/complete tasks."
+      });
+    }
 
     if (!action) {
       return res.status(400).json({ message: "Action is required (start, pause, complete)" });
@@ -128,32 +200,56 @@ exports.toggleTodoStatus = async (req, res) => {
     const currentTime = now.toTimeString().split(" ")[0];
 
     // START
-    if (action === "start") {
-      if (!todo.start_time) {
-        todo.start_time = currentTime;
-      }
 
-      todo.status = "start";
+    // START (includes resume)
+    if (action === "start") {
+
+        // FIRST START CASE
+        if (!todo.start_time && todo.status !== "pause") {
+            todo.start_time = currentTime;
+            todo.status = "start";
+        }
+
+        // RESUME CASE (status = pause)
+        else if (todo.status === "pause") {
+
+            // Reset start_time to NOW (IMPORTANT)
+            todo.start_time = currentTime;
+
+            todo.status = "start";
+        }
+
+        await todo.save();
+        return res.json({ message: "Task started/resumed", todo });
     }
+
+
 
     // PAUSE
     else if (action === "pause") {
 
-      if (!todo.start_time) {
-        return res.status(400).json({ message: "Cannot pause: task not started yet" });
-      }
+        if (!todo.start_time) {
+            return res.status(400).json({ message: "Cannot pause: task not started yet" });
+        }
 
-      const start = new Date(`1970-01-01 ${todo.start_time}`);
-      const end = new Date(`1970-01-01 ${currentTime}`);
-      const diffSeconds = (end - start) / 1000;
+        const start = new Date(`1970-01-01 ${todo.start_time}`);
+        const end = new Date(`1970-01-01 ${currentTime}`);
+        const diffSeconds = (end - start) / 1000;
 
-      const previous = toSeconds(todo.total_tracked_time);
-      const updated = previous + diffSeconds;
+        const previous = toSeconds(todo.total_tracked_time);
+        const updated = previous + diffSeconds;
 
-      todo.total_tracked_time = toHHMMSS(updated);
-      //todo.start_time = null;
-      todo.status = "pause";
+        todo.total_tracked_time = toHHMMSS(updated);
+
+        // DO NOT RESET start_time (as per your requirement)
+        // todo.start_time = null;
+
+        todo.status = "pause";
+
+        await todo.save();
+        return res.json({ message: "Task paused", todo });
     }
+
 
     // COMPLETE
     else if (action === "complete") {
@@ -197,50 +293,44 @@ exports.toggleTodoStatus = async (req, res) => {
 
 // Add Key Learning / Notes
 
+// exports.addKeyLearning = async (req, res) => {
+//   try {
+//     const { notes } = req.body;
 
-exports.addKeyLearning = async (req, res) => {
-  try {
-    const emp_id = req.user.emp_id;
-    const { notes } = req.body;
-    if (!notes) return res.status(400).json({ message: "Notes required" });
+//     if (!notes) {
+//       return res.status(400).json({ message: "Notes required" });
+//     }
 
-    const today = new Date().toISOString().slice(0, 10);
+//     res.json({
+//       message: "Key learning received. Punch-out will save it.",
+//       notes
+//     });
 
-    // Check if a todo exists for today to store key_learning
-    const todo = await Todo.findOne({ where: { emp_id, date: today } });
+//   } catch (error) {
+//     console.error(error);
+//     res.status(500).json({ message: "Server error", error });
+//   }
+// };
 
-    if (todo) {
-      todo.key_learning = notes;
-      await todo.save();
-    } else {
-      await Todo.create({ emp_id, date: today, key_learning: notes, sr_no: 1, title: "N/A", description: "N/A", priority: "Low", status: "not_started", total_tracked_time: "00:00:00" });
-    }
 
-    res.json({ message: "Key learnings saved", emp_id, date: today, key_learning: notes });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Server error", error });
-  }
-};
+// // Get Key Learnings
+// exports.getKeyLearning = async (req, res) => {
+//   try {
+//     const emp_id = req.user.emp_id;
+//     const today = new Date().toISOString().slice(0, 10);
 
-// Get Key Learnings
-exports.getKeyLearning = async (req, res) => {
-  try {
-    const emp_id = req.user.emp_id;
-    const today = new Date().toISOString().slice(0, 10);
+//     const todo = await Todo.findOne({ where: { emp_id, date: today } });
 
-    const todo = await Todo.findOne({ where: { emp_id, date: today } });
-
-    res.json({
-      emp_id,
-      date: today,
-      key_learning: todo?.key_learning || ""
-    });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Server error", error });
-  }
-};
+//     res.json({
+//       emp_id,
+//       date: today,
+//       key_learning: todo?.key_learning || ""
+//     });
+//   } catch (error) {
+//     console.error(error);
+//     res.status(500).json({ message: "Server error", error });
+//   }
+// };
 
 exports.addRemark = async (req, res) => {
   try {
@@ -248,10 +338,20 @@ exports.addRemark = async (req, res) => {
     const { sr_no } = req.params;
     const { remark } = req.body;
 
+    if (!(await isUserPunchedIn(emp_id))) {
+      return res.status(403).json({
+        message: "You must punch in before adding remarks."
+      });
+    }
+    if (await isUserPunchedOut(emp_id)) {
+      return res.status(403).json({
+        message: "You are already punched out. Cannot add remark."
+      });
+    }
+
     if (!remark || remark.trim() === "") {
       return res.status(400).json({ message: "Remark is required" });
     }
-
     const todo = await Todo.findOne({ where: { emp_id, sr_no } });
 
     if (!todo) {
@@ -280,6 +380,19 @@ exports.deleteTodo = async (req, res) => {
   try {
     const emp_id = req.user.emp_id;
     const { sr_no } = req.params;
+
+    if (!(await isUserPunchedIn(emp_id))) {
+      return res.status(403).json({
+        message: "You must punch in before deleting todos."
+      });
+    }
+
+    if (await isUserPunchedOut(emp_id)) {
+      return res.status(403).json({
+        message: "You are already punched out. Cannot delete todos."
+      });
+    }
+
 
     const deleted = await Todo.destroy({ where: { sr_no, emp_id } });
 

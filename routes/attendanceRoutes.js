@@ -16,7 +16,8 @@ router.post("/work-end", verifyToken, verifyUser, attendanceController.endWork);
 router.get("/daily-log", verifyToken, verifyUser, attendanceController.getDailyLog);
 
 router.get("/today-status", verifyToken, attendanceController.getTodayAttendanceStatus);
-
+router.put("/key-learning", verifyToken, verifyUser, attendanceController.updateKeyLearning);
+router.get("/key-learning", verifyToken, verifyUser, attendanceController.updateKeyLearning);
 
 // Break & Lunch routes (User only)
 router.put("/break/start", verifyToken, verifyUser, attendanceController.startBreak);

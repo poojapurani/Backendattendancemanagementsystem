@@ -151,12 +151,25 @@ exports.endWork = async (req, res) => {
     }
 
     if (record.work_end) {
-      return res.status(400).json({ message: "Work already ended", work_end: record.work_end });
+      return res.status(400).json({
+        message: "Work already ended",
+        work_end: record.work_end
+      });
     }
 
+    // 🔥 Calculate duration
+    const workDuration = calculateDuration(record.work_start, now);
+
     record.work_end = now;
+    record.work_duration = workDuration; // ⬅ save duration
     await record.save();
-    res.json({ message: "Work ended", work_end: now });
+
+    res.json({
+      message: "Work ended",
+      work_start: record.work_start,
+      work_end: now,
+      work_duration: workDuration
+    });
 
   } catch (error) {
     console.error(error);
@@ -296,11 +309,17 @@ exports.getTodayAttendanceStatus = async (req, res) => {
       time_out: attendance?.time_out || null,
       working_hours: attendance?.working_hours || "00:00:00",
 
-      // 🔥 Added break details
+      // Breaks
       lunch_start: attendance?.lunch_start || null,
       lunch_end: attendance?.lunch_end || null,
       break_start: attendance?.break_start || null,
-      break_end: attendance?.break_end || null
+      break_end: attendance?.break_end || null,
+
+      // NEW FIELDS ADDED ⬇⬇⬇
+      work_start: attendance?.work_start || null,
+      work_end: attendance?.work_end || null,
+
+      key_learning: attendance?.key_learning || ""
     };
 
     res.json({
@@ -314,6 +333,69 @@ exports.getTodayAttendanceStatus = async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 };
+
+exports.updateKeyLearning = async (req, res) => {
+  try {
+    const emp_id = req.user.emp_id;
+    const key_learning = req.body && req.body.notes ? req.body.notes : "";
+
+    if (!key_learning || key_learning.trim() === "") {
+      return res.status(400).json({ message: "Key learning cannot be empty" });
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+
+    const attendance = await Attendance.findOne({
+      where: { emp_id, date: today }
+    });
+
+    if (!attendance) {
+      return res.status(400).json({ message: "No attendance record found for today" });
+    }
+
+    await attendance.update({ key_learning });
+
+    return res.json({
+      message: "Key learnings saved",
+      emp_id,
+      date: today,
+      key_learning
+    });
+
+
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ message: "Server error", err });
+  }
+};
+
+
+exports.getTodayKeyLearning = async (req, res) => {
+  try {
+    const emp_id = req.user.emp_id;
+    const today = new Date().toISOString().slice(0, 10);
+
+    const attendance = await Attendance.findOne({
+      where: { emp_id, date: today }
+    });
+
+    if (!attendance) {
+      return res.status(404).json({ message: "No attendance record found for today" });
+    }
+
+    return res.json({
+      emp_id,
+      date: today,
+      key_learning: attendance.key_learning || ""
+    });
+
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ message: "Server error", err });
+  }
+};
+
+
 
 
 // Punch Out
@@ -354,6 +436,14 @@ exports.punchOut = async (req, res) => {
         message: "Lunch break is running. End it before punch out!"
       });
     }
+
+    // 🚫 WORK SESSION RUNNING
+    if (record.work_start && !record.work_end) {
+      return res.status(400).json({
+        message: "Work session is running. End work session before punch out!"
+      });
+    }
+
 
     // 🚫 TODO RUNNING (status = start)
     const runningTodo = await Todo.findOne({
@@ -418,6 +508,20 @@ exports.punchOut = async (req, res) => {
       working_hours,
       status: finalStatus
     });
+
+    // Save key_learning only if punch-out successful
+    if (req.body.key_learning && req.body.key_learning.trim() !== "") {
+      await Attendance.update(
+        { key_learning: req.body.key_learning },
+        {
+          where: {
+            emp_id,
+            date: new Date().toISOString().slice(0, 10)
+          }
+        }
+      );
+    }
+
 
     res.json({
       message: "Punch-out recorded",
@@ -570,8 +674,15 @@ exports.getHistory = async (req, res) => {
             status: "not set",
             isPresent: "not set",
             break_duration,
-            lunch_duration
+            lunch_duration,
+            work_start: null,
+            work_end: null,
+            lunch_start: null,
+            lunch_end: null,
+            break_start: null,
+            break_end: null
           };
+
         }
       }
 
@@ -595,6 +706,13 @@ exports.getHistory = async (req, res) => {
         time_in = r.time_in;
         time_out = r.time_out;
         working_hours = r.working_hours || "00:00:00";
+        work_start = r.work_start;
+        work_end = r.work_end;
+        lunch_start = r.lunch_start;
+        lunch_end = r.lunch_end;
+        break_start = r.break_start;
+        break_end = r.break_end;
+
 
         const [h, m, s] = working_hours.split(":").map(Number);
         totalSeconds += h * 3600 + m * 60 + s;
@@ -603,15 +721,24 @@ exports.getHistory = async (req, res) => {
         if (r.lunch_start && r.lunch_end) lunch_duration = calculateDuration(r.lunch_start, r.lunch_end);
       }
 
-      return { date: dateStr, 
-        time_in, 
-        time_out, 
-        working_hours, 
-        status, 
+      return { 
+        date: dateStr,
+        time_in,
+        time_out,
+        working_hours,
+        status,
         isPresent,
         break_duration,
-        lunch_duration
+        lunch_duration,
+        work_start,
+        work_end,
+        lunch_start,
+        lunch_end,
+        break_start,
+        break_end
       };
+
+
     });
 
     // Average WH
@@ -778,51 +905,96 @@ exports.getByUserAndDate = async (req, res) => {
 exports.editAttendance = async (req, res) => {
   try {
     const { emp_id, date } = req.params;
-    const { time_in, time_out, status } = req.body;
+
+    const {
+      time_in,
+      time_out,
+      status,
+      work_start,
+      work_end,
+      lunch_start,
+      lunch_end,
+      break_start,
+      break_end,
+      key_learning
+    } = req.body;
 
     const record = await Attendance.findOne({ where: { emp_id, date } });
-    if (!record) {
-      return res.status(404).json({ message: "Attendance record not found" });
-    }
+    if (!record) return res.status(404).json({ message: "Attendance record not found" });
 
     const newTimeIn = time_in || record.time_in;
     const newTimeOut = time_out || record.time_out;
 
-    // Recalculate working hours if both times exist
+    // -------------- WORKING HOURS LIKE punchOut --------------
     let working_hours = "00:00:00";
+
     if (newTimeIn && newTimeOut) {
-      const start = new Date(`${date}T${newTimeIn}`);
-      const end = new Date(`${date}T${newTimeOut}`);
-      const diffMs = end - start;
+      const timeIn = new Date(`${date}T${newTimeIn}`);
+      const timeOut = new Date(`${date}T${newTimeOut}`);
+
+      let diffMs = timeOut - timeIn;
+
+      // subtract breaks
+      let totalBreakMs = 0;
+
+      if (record.lunch_start && record.lunch_end) {
+        const lunchStart = new Date(`${date}T${record.lunch_start}`);
+        const lunchEnd = new Date(`${date}T${record.lunch_end}`);
+        totalBreakMs += Math.max(0, lunchEnd - lunchStart);
+      }
+
+      if (record.break_start && record.break_end) {
+        const breakStart = new Date(`${date}T${record.break_start}`);
+        const breakEnd = new Date(`${date}T${record.break_end}`);
+        totalBreakMs += Math.max(0, breakEnd - breakStart);
+      }
+
+      diffMs -= totalBreakMs;
+
       const hours = Math.floor(diffMs / 3600000);
       const minutes = Math.floor((diffMs % 3600000) / 60000);
       const seconds = Math.floor((diffMs % 60000) / 1000);
-      working_hours = `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
+
+      working_hours =
+        `${hours.toString().padStart(2, "0")}:` +
+        `${minutes.toString().padStart(2, "0")}:` +
+        `${seconds.toString().padStart(2, "0")}`;
     }
 
-    // Recalculate status based on times if status not explicitly passed
-    let finalStatus = status || "present"; // default
+    // -------------- STATUS LOGIC SAME AS BEFORE --------------
+    let finalStatus = status || record.status;
+
     if (!status) {
       const reportingTime = new Date(`${date}T09:30:00`);
       const halfDayCut = new Date(`${date}T13:30:00`);
-      const absentCut = new Date(`${date}T14:00:00`);
       const punchInTime = new Date(`${date}T${newTimeIn}`);
 
       if (!newTimeIn) finalStatus = "absent";
-      else if (punchInTime > reportingTime && punchInTime <= halfDayCut) finalStatus = "Late";
-      else if (punchInTime > halfDayCut) finalStatus = "half-day";
-      else finalStatus = "present";
+      else if (punchInTime > reportingTime && punchInTime <= halfDayCut)
+        finalStatus = "Late";
+      else if (punchInTime > halfDayCut)
+        finalStatus = "half-day";
+      else
+        finalStatus = "present";
     }
 
+    // -------------- UPDATE DB --------------
     await record.update({
       time_in: newTimeIn,
       time_out: newTimeOut,
       status: finalStatus,
-      working_hours
+      working_hours,
+      work_start: work_start || record.work_start,
+      work_end: work_end || record.work_end,
+      lunch_start: lunch_start || record.lunch_start,
+      lunch_end: lunch_end || record.lunch_end,
+      break_start: break_start || record.break_start,
+      break_end: break_end || record.break_end,
+      key_learning: key_learning || record.key_learning
     });
 
     res.json({
-      message: "✅ Attendance updated successfully",
+      message: "Attendance updated successfully",
       attendance: record
     });
 
@@ -831,6 +1003,7 @@ exports.editAttendance = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
+
 
 // Admin: Delete attendance by user ID and date
 // exports.deleteAttendance = async (req, res) => {
@@ -857,81 +1030,80 @@ exports.editAttendance = async (req, res) => {
 
 exports.adminAddAttendance = async (req, res) => {
   try {
-    const { emp_id, date, punch_in, punch_out, status } = req.body;
-
-    if (!emp_id || !date || !status) {
-      return res.status(400).json({ message: "Missing required fields" });
+    const admin = req.user;  // logged-in admin info
+    if (!admin) {
+      return res.status(401).json({ message: "Unauthorized" });
     }
 
-    // ⛔️ NEW: Check joining date
-    const user = await User.findOne({ where: { emp_id } });
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
+    const {
+      emp_id,        // TAKE FROM BODY
+      date: inputDate,
+      time_in,
+      time_out,
+      status,
+      work_start,
+      work_end,
+      lunch_start,
+      lunch_end,
+      break_start,
+      break_end
+    } = req.body;
+
+    if (!emp_id) {
+      return res.status(400).json({ message: "emp_id is required in body" });
     }
 
-    const joiningDate = new Date(user.joining_date);
-    const selectedDate = new Date(date);
+    const date = inputDate || new Date().toISOString().slice(0, 10);
 
-    if (selectedDate < joiningDate) {
-      return res.status(400).json({
-        message: `Admin cannot add attendance before employee's joining date (${user.joining_date})`
-      });
+    const existing = await Attendance.findOne({ where: { emp_id, date } });
+    if (existing) {
+      return res.status(400).json({ message: "Attendance already submitted for this date" });
     }
 
-    // Convert punch_in and punch_out to HH:MM:SS
-    const formatToTime = (value) => {
-      if (!value) return null;
-      const dateObj = new Date(`1970-01-01 ${value}`);
-      return dateObj.toTimeString().split(" ")[0];
-    };
+    let working_hours = "00:00:00";
+    if (time_in && time_out) {
+      const start = new Date(`${date}T${time_in}`);
+      const end = new Date(`${date}T${time_out}`);
+      const diff = end - start;
 
-    const timeIn = formatToTime(punch_in);
-    const timeOut = formatToTime(punch_out);
-
-    let workingHours = null;
-
-    if (timeIn && timeOut) {
-      const start = new Date(`1970-01-01T${timeIn}`);
-      const end = new Date(`1970-01-01T${timeOut}`);
-
-      let diff = (end - start) / 1000;
-
-      const hours = Math.floor(diff / 3600);
-      diff -= hours * 3600;
-      const minutes = Math.floor(diff / 60);
-      const seconds = Math.floor(diff % 60);
-
-      workingHours = `${hours.toString().padStart(2, "0")}:${minutes
-        .toString()
-        .padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
+      const h = Math.floor(diff / 3600000);
+      const m = Math.floor((diff % 3600000) / 60000);
+      const s = Math.floor((diff % 60000) / 1000);
+      working_hours = `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
     }
-
-    const record = await Attendance.create({
+    let work_duration = null;
+      if (work_start && work_end) {
+        work_duration = calculateDuration(work_start, work_end);
+      }
+    const newRecord = await Attendance.create({
       emp_id,
       date,
-      time_in: timeIn,
-      time_out: timeOut,
-      working_hours: workingHours,
-      status
+      time_in,
+      time_out,
+      working_hours,
+      status,
+      work_start,
+      work_end,
+      lunch_start,
+      lunch_end,
+      break_start,
+      break_end,  
+      work_duration
     });
 
-    return res.json({
+    res.json({
       message: "Attendance added successfully",
-      attendance: record
+      attendance: newRecord
     });
 
-  } catch (error) {
-    console.log(error);
-
-    if (error.name === "SequelizeUniqueConstraintError") {
-      return res.status(400).json({
-        message: "Attendance for this user already exists for this date"
-      });
-    }
-
-    return res.status(500).json({ message: "Server error" });
+  } catch (err) {
+    console.error("Add Attendance Error:", err);
+    res.status(500).json({ message: "Server error" });
   }
 };
+
+
+
 
 // Convert seconds → HH:MM:SS
 function secondsToHHMMSS(seconds) {
@@ -1152,6 +1324,13 @@ exports.getAttendanceReport = async (req, res) => {
         isPresent,
         break_duration,
         lunch_duration,
+        work_start: entry?.work_start || null,
+        work_end: entry?.work_end || null,
+        lunch_start: entry?.lunch_start || null,
+        lunch_end: entry?.lunch_end || null,
+        break_start: entry?.break_start || null,
+        break_end: entry?.break_end || null,
+
         User: {
           name: user.name,
           emp_id: user.emp_id,
@@ -1214,37 +1393,52 @@ const secondsToHHMM = sec => {
 // };
 
 // Get next working day (skip weekends)
-const nextWorkingDay = (date = new Date()) => {
-  const d = new Date(date);
-  d.setDate(d.getDate() + 1);
-  while (d.getDay() === 0 || d.getDay() === 6) {
-    d.setDate(d.getDate() + 1);
+function nextWorkingDay() {
+  const today = new Date();
+  let next = new Date(today);
+  next.setDate(next.getDate() + 1); // move to tomorrow
+
+  // ❌ skip only Sunday
+  if (next.getDay() === 0) {  // 0 = Sunday
+    next.setDate(next.getDate() + 1); // move to Monday
   }
-  return d.toISOString().split("T")[0];
-};
+
+  return next.toISOString().split("T")[0];
+}
 
 // ----------------- Daily Log API -----------------
 exports.getDailyLog = async (req, res) => {
   try {
     const emp_id = req.user.emp_id;
+    const { date } = req.query;
 
-    // Fetch user
+    // --- SELECT DATE: user input OR today's date ---
+    const selectedDate = date ? new Date(date) : new Date();
+    const selectedDateStr = selectedDate.toISOString().split("T")[0];
+
+    // Validate user
     const user = await User.findOne({ where: { emp_id } });
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    const today = new Date();
-    const todayStr = today.toISOString().split("T")[0];
-
-    // Fetch todos for today
+    // Fetch todos: selected date + previous pending
     const todos = await Todo.findAll({
-      where: { emp_id, date: todayStr },
-      order: [["sr_no", "ASC"]],
+      where: {
+        emp_id,
+        [Op.or]: [
+          { date: selectedDateStr }, // tasks of selected date
+          {
+            date: { [Op.lt]: selectedDateStr }, // previous tasks
+            status: { [Op.in]: ["pause", "not_started"] } // pending
+          }
+        ]
+      },
+      order: [["date", "ASC"], ["sr_no", "ASC"]],
     });
 
     const completed = [];
     const pending = [];
     const nextDay = [];
-    const keyLearnings = []; // collect key learnings from todos
+    const keyLearnings = [];
 
     todos.forEach(todo => {
       const timeSpent = todo.total_tracked_time
@@ -1261,7 +1455,8 @@ exports.getDailyLog = async (req, res) => {
           remark: todo.remark || ""
         });
         if (todo.key_learning) keyLearnings.push(todo.key_learning);
-      } else if (todo.status === "pause") {
+      } 
+      else if (todo.status === "pause") {
         pending.push({
           sr_no: todo.sr_no,
           title: todo.title,
@@ -1271,23 +1466,31 @@ exports.getDailyLog = async (req, res) => {
           planned_completion_date: nextWorkingDay()
         });
         if (todo.key_learning) keyLearnings.push(todo.key_learning);
-      } else if (todo.status === "not_started") {
+      } 
+      else if (todo.status === "not_started") {
         nextDay.push({
           sr_no: todo.sr_no,
           title: todo.title,
           description: todo.description,
-          assigned_to: emp_id,
+          assigned_by: todo.assigned_by || "N/A",
           priority: todo.priority
         });
       }
     });
 
-    // Fetch today's attendance for punch-in/out & breaks
-    const attendance = await Attendance.findOne({ where: { emp_id, date: todayStr } });
+    // Attendance for selected date
+    const attendance = await Attendance.findOne({
+      where: { emp_id, date: selectedDateStr }
+    });
+
     const punchIn = attendance?.time_in || null;
     const punchOut = attendance?.time_out || null;
     const workStart = attendance?.work_start || null;
     const workEnd = attendance?.work_end || null;
+
+    if (attendance?.key_learning) {
+      keyLearnings.push(attendance.key_learning);
+    }
 
     const breaks_log = [
       {
@@ -1312,12 +1515,11 @@ exports.getDailyLog = async (req, res) => {
 
     const dailyLog = {
       header: {
-
         "Intern ID": emp_id,
         "Intern Name": user.name,
-        "Department": user.department ,
+        "Department": user.department,
         "Supervisor Name": user.supervisor_name || null,
-        "Date": todayStr,
+        "Date": selectedDateStr,      // <-- final selected date shown
         "Punch in time": punchIn,
         "Work Start": workStart,
         "Punch out time": punchOut,
@@ -1327,7 +1529,7 @@ exports.getDailyLog = async (req, res) => {
       pending_tasks: pending,
       next_day_todo: nextDay,
       breaks_log,
-      key_learnings_notes: keyLearnings.join("\n") // all key learnings combined
+      key_learnings_notes: keyLearnings.join("\n")
     };
 
     res.json({ dailyLog });

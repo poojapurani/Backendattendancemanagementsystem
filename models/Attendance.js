@@ -63,7 +63,15 @@ const Attendance = sequelize.define(
       type: DataTypes.TIME,
       allowNull: true,
       defaultValue: null
-    }
+    },
+    work_duration: {
+      type: DataTypes.STRING,  // HH:MM:SS
+      allowNull: true
+    },
+    key_learning: {
+      type: DataTypes.TEXT,
+      allowNull: true
+    },
 
   },
   {
