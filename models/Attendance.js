@@ -72,6 +72,10 @@ const Attendance = sequelize.define(
       type: DataTypes.TEXT,
       allowNull: true
     },
+    office_hours: {
+      type: DataTypes.STRING,
+      allowNull: true
+    }
 
   },
   {

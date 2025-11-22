@@ -56,6 +56,12 @@ const User = sequelize.define(
         defaultValue: "active" // active | deactivated
         },
 
+        previous_emp_ids: {
+            type: DataTypes.STRING,
+            allowNull: true,
+        }
+
+
     },
     {
         timestamps: true,

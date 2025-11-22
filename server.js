@@ -8,7 +8,7 @@ dotenv.config();
 const app = express();
 
 const corsOptions = {
-  origin: "https://b8ebc431-9947-46da-9232-d34475f12c94-00-1fclazu1303ua.pike.replit.dev",
+  origin: "https://3945c95c-8d3d-4e14-9792-042025856c73-00-1k33g8iaa9jmx.pike.replit.dev",
   methods: "GET,HEAD,PUT,PATCH,POST,DELETE",
   credentials: true,
 };
@@ -20,6 +20,8 @@ app.use(express.json());
 // 📌 Load Models BEFORE associations
 require("./models/User");
 require("./models/Attendance");
+require("./models/Setting");
+require("./models/Todo");
 
 // 📌 Load and apply associations
 const applyAssociations = require("./models/association");
@@ -36,6 +38,9 @@ const authRoutes = require("./routes/authRoutes");
 const attendanceRoutes = require("./routes/attendanceRoutes");
 const dashboardRoutes = require("./routes/dashboardRoutes");
 const todoRoutes = require("./routes/todoRoutes");
+const settingsRoutes = require("./routes/settingsRoutes");
+
+app.use("/api/settings", settingsRoutes);
 
 app.use("/api/auth", authRoutes);
 app.use("/api/attendance", attendanceRoutes);

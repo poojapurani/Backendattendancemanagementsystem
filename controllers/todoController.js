@@ -90,9 +90,11 @@ exports.getTodos = async (req, res) => {
     const emp_id = req.user.emp_id;
 
     const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    const user = await User.findOne({ where: { emp_id } });
+    const fetchIds = [user.emp_id, ...(user.previous_emp_ids || [])];
 
     const todos = await Todo.findAll({
-      where: { emp_id },
+      where: {emp_id: fetchIds },
       order: [["sr_no", "ASC"]],
       attributes: { exclude: ["key_learning"] }
     });
@@ -154,6 +156,11 @@ exports.updateTodo = async (req, res) => {
   }
 };
 
+const safeDate = (time) => {
+  if (!time || !/^\d{2}:\d{2}:\d{2}$/.test(time)) return null;
+  return new Date(`1970-01-01T${time}Z`);
+};
+
 exports.toggleTodoStatus = async (req, res) => {
   try {
     const emp_id = req.user.emp_id;
@@ -184,10 +191,12 @@ exports.toggleTodoStatus = async (req, res) => {
 
     // Convert HH:MM:SS → seconds
     const toSeconds = (t) => {
-      if (!t) return 0;
+      if (!t || t === "NaN:NaN:NaN") return 0;
+      if (!/^\d{2}:\d{2}:\d{2}$/.test(t)) return 0; // FIX
       const [h, m, s] = t.split(":").map(Number);
       return h * 3600 + m * 60 + s;
     };
+
 
     const toHHMMSS = (sec) => {
       const h = String(Math.floor(sec / 3600)).padStart(2, "0");
@@ -203,6 +212,11 @@ exports.toggleTodoStatus = async (req, res) => {
 
     // START (includes resume)
     if (action === "start") {
+
+        if (!todo.total_tracked_time) {
+          todo.total_tracked_time = "00:00:00";
+        }
+
 
         // FIRST START CASE
         if (!todo.start_time && todo.status !== "pause") {
@@ -232,8 +246,11 @@ exports.toggleTodoStatus = async (req, res) => {
             return res.status(400).json({ message: "Cannot pause: task not started yet" });
         }
 
-        const start = new Date(`1970-01-01 ${todo.start_time}`);
-        const end = new Date(`1970-01-01 ${currentTime}`);
+        const start = safeDate(todo.start_time);
+        if (!start) return res.status(400).json({ message: "Invalid start_time for task" });
+
+        const end = safeDate(currentTime);
+
         const diffSeconds = (end - start) / 1000;
 
         const previous = toSeconds(todo.total_tracked_time);

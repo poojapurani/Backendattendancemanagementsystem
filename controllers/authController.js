@@ -130,6 +130,11 @@ exports.login = async (req, res) => {
 
     const user = await User.findOne({ where: { emp_id: emp_id.trim() } });
 
+    // const fetchIds = [
+    //   user.emp_id,
+    //   ...(user.previous_emp_ids || [])
+    // ];
+
     //  emp_id incorrect
     if (!user) {
       return res.status(400).json({ message: "Invalid emp_id" });
@@ -167,7 +172,7 @@ exports.login = async (req, res) => {
         // status: user.status,
       },
       process.env.JWT_SECRET,
-      { expiresIn: "1d" }
+      { expiresIn: "1h" }
     );
 
     res.status(200).json({
@@ -245,6 +250,122 @@ exports.getAllUsers = async (req, res) => {
   }
 };
 
+
+/*---------------------------------------------------------
+    FUNCTION: CREATE NEW USER WHEN INT → EMP
+---------------------------------------------------------*/
+async function createNewEmployeeFromIntern(oldUser, req, res) {
+  try {
+    const { name, user_id, department, team_name, joining_date, password } = req.body;
+
+    const teamCodes = {
+      shdpixel: "01",
+      metamatrix: "02",
+      aibams: "03",
+    };
+
+    const finalTeamName = (team_name || oldUser.team_name).toLowerCase();
+    const teamCode = teamCodes[finalTeamName];
+    if (!teamCode) {
+      return res.status(400).json({ message: "Invalid team_name" });
+    }
+
+    // Extract old year digits: INT010325001 → 25
+    const yearDigits = oldUser.emp_id.slice(5, 7);
+
+    // Find last EMP serial for this team + year
+    const lastUser = await User.findOne({
+      where: { emp_id: { [Op.like]: `EMP${teamCode}${yearDigits}%` } },
+      order: [["emp_id", "DESC"]],
+    });
+
+    let newSerial = "001";
+    if (lastUser) {
+      const lastSerial = parseInt(lastUser.emp_id.slice(-3));
+      newSerial = String(lastSerial + 1).padStart(3, "0");
+    }
+
+    const newEmpId = `EMP${teamCode}${yearDigits}${newSerial}`;
+
+    // Add old emp_id to previous_emp_ids
+    const prevIds = oldUser.previous_emp_ids
+      ? oldUser.previous_emp_ids.split(",")
+      : [];
+
+    if (!prevIds.includes(oldUser.emp_id)) {
+      prevIds.push(oldUser.emp_id);
+    }
+
+    // Hash password if needed
+    let hashed = oldUser.password;
+    if (password && password.trim() !== "") {
+      hashed = await bcrypt.hash(password.trim(), 12);
+    }
+
+    // Create NEW USER
+    const newUser = await User.create({
+      emp_id: newEmpId,
+      name: name || oldUser.name,
+      user_id: user_id || oldUser.user_id,
+      password: hashed,
+      role: "User",
+      department: department || oldUser.department,
+      member_type: "EMP",
+      team_name: finalTeamName,
+      joining_date: joining_date || oldUser.joining_date,
+      previous_emp_ids: prevIds.join(","),
+    });
+
+    // OPTIONAL: deactivate intern
+    await oldUser.update({ status: "deactivated" });
+
+    return res.status(201).json({
+      message: "INT upgraded to EMP - new user created successfully",
+      new_emp_id: newEmpId,
+      new_user: newUser,
+      old_user_status: "deactivated",
+    });
+
+  } catch (err) {
+    console.error("INT → EMP Error:", err);
+    res.status(500).json({ message: "Failed to upgrade user", error: err.message });
+  }
+}
+
+
+/*---------------------------------------------------------
+    NORMAL UPDATE FUNCTION (no INT → EMP)
+---------------------------------------------------------*/
+async function normalUpdateUser(user, req, res) {
+  try {
+    const { name, user_id, role, department, member_type, team_name, joining_date, password } = req.body;
+
+    const updatePayload = {
+      name: name || user.name,
+      user_id: user_id || user.user_id,
+      role: role || user.role,
+      department: department || user.department,
+      member_type: member_type || user.member_type,
+      team_name: team_name || user.team_name,
+      joining_date: joining_date || user.joining_date,
+    };
+
+    if (password && password.trim() !== "") {
+      updatePayload.password = await bcrypt.hash(password.trim(), 12);
+    }
+
+    await user.update(updatePayload);
+
+    return res.status(200).json({
+      message: "User updated successfully",
+      updated_data: updatePayload,
+    });
+
+  } catch (err) {
+    console.error("Normal Update Error:", err);
+    res.status(500).json({ message: "Error", error: err.message });
+  }
+}
 /*----------------------------------------------------
     UPDATE USER (ADMIN)
 ----------------------------------------------------*/
@@ -253,88 +374,24 @@ exports.updateUserByEmpId = async (req, res) => {
     const { empId } = req.params;
     const { name, user_id, role, department, member_type, team_name, joining_date, password } = req.body;
 
-    const user = await User.findOne({ where: { emp_id: empId } });
+    // 1) Fetch OLD USER
+    const oldUser = await User.findOne({ where: { emp_id: empId } });
 
-    if (!user) {
+    if (!oldUser) {
       return res.status(404).json({ message: "User not found" });
     }
 
-    // Team codes
-    const teamCodes = {
-      shdpixel: "01",
-      metamatrix: "02",
-      aibams: "03",
-    };
+    const oldEmpId = oldUser.emp_id;
+    const oldMemberType = oldUser.member_type.toUpperCase();
+    const newMemberType = (member_type || oldMemberType).toUpperCase();
 
-    const oldMemberType = user.member_type.toUpperCase();
-    const oldTeamName = user.team_name.toLowerCase();
-
-    const finalMemberType = (member_type || oldMemberType).toUpperCase();
-    const finalTeamName = (team_name || oldTeamName).toLowerCase();
-
-    // Generate team code
-    const finalTeamCode = teamCodes[finalTeamName];
-    if (!finalTeamCode) {
-      return res.status(400).json({ message: "Invalid team_name" });
+    // ❗ Only create NEW user when INT → EMP
+    if (oldMemberType === "INT" && newMemberType === "EMP") {
+      return await createNewEmployeeFromIntern(oldUser, req, res);
     }
 
-    // Extract OLD middle 2 digits (year digits)
-    const oldMidDigits = user.emp_id.slice(5, 7);
-
-    let finalEmpId = user.emp_id;
-
-    // Recalculate emp_id only if member_type or team_name changed
-    if (finalMemberType !== oldMemberType || finalTeamName !== oldTeamName) {
-      const lastUser = await User.findOne({
-        where: { emp_id: { [Op.like]: `${finalMemberType}${finalTeamCode}%` } },
-        order: [["emp_id", "DESC"]],
-      });
-
-      let newSerial = "001";
-      if (lastUser) {
-        const lastSerial = parseInt(lastUser.emp_id.slice(-3));
-        newSerial = String(lastSerial + 1).padStart(3, "0");
-      }
-
-      finalEmpId = `${finalMemberType}${finalTeamCode}${oldMidDigits}${newSerial}`;
-    }
-
-    let finalUserId = user.user_id; // default
-
-    if (user_id && user_id !== user.user_id) {
-      const existingUserId = await User.findOne({ where: { user_id } });
-      if (existingUserId) {
-        return res.status(400).json({ message: "This user_id is already taken" });
-      }
-      finalUserId = user_id; // assign new value
-    }
-
-    // Prepare update payload
-    const updatePayload = {
-      member_type: finalMemberType,
-      team_name: finalTeamName,
-      emp_id: finalEmpId,
-      name: name || user.name,
-      role: role || user.role,
-      department: department || user.department,
-      joining_date: joining_date || user.joining_date,
-      user_id: finalUserId
-    };
-
-
-    // Hash password if provided
-    if (password && password.trim() !== "") {
-      updatePayload.password = await bcrypt.hash(password.trim(), 12);
-    }
-
-    // Update using instance method
-    await user.update(updatePayload);
-
-    res.status(200).json({
-      message: "User updated successfully",
-      new_emp_id: finalEmpId,
-      updated_data: updatePayload,
-    });
+    // If no INT → EMP, perform normal update
+    return await normalUpdateUser(oldUser, req, res);
 
   } catch (err) {
     console.error("Update Error:", err);
