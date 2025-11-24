@@ -27,7 +27,7 @@ const Todo = sequelize.define(
 
     description: {
         type: DataTypes.STRING,
-        allowNull: false,
+        allowNull: true,
     },
 
     priority: {
@@ -36,7 +36,7 @@ const Todo = sequelize.define(
     },
 
     status: {
-        type: DataTypes.ENUM("not_started", "start", "pause", "complete"),
+        type: DataTypes.ENUM("not_started", "start", "pause", "complete","reset"),
         defaultValue: "not_started",
     },
     start_time: {

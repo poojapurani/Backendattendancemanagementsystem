@@ -52,8 +52,16 @@ exports.addTodo = async (req, res) => {
       });
     }
 
-    if (!title || !description || !priority) {
-      return res.status(400).json({ message: "title, description & priority required" });
+    const today = getISTDateString();
+    const attendance = await Attendance.findOne({ where: { emp_id, date: today } });
+    if (attendance?.work_end) {
+      return res.status(403).json({
+        message: "Work has ended for today. Cannot modify tasks."
+      });
+    }
+
+    if (!title || !priority) {
+      return res.status(400).json({ message: "title & priority required" });
     }
 
     const sr_no = await getNextSrNo(emp_id);
@@ -161,6 +169,27 @@ const safeDate = (time) => {
   return new Date(`1970-01-01T${time}Z`);
 };
 
+function getISTDate() {
+  return new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+}
+
+
+function getISTDateString() {
+  const d = getISTDate();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getISTTimeString() {
+  const d = getISTDate();
+  const hours = String(d.getHours()).padStart(2, "0");
+  const minutes = String(d.getMinutes()).padStart(2, "0");
+  const seconds = String(d.getSeconds()).padStart(2, "0");
+  return `${hours}:${minutes}:${seconds}`;
+}
+
 exports.toggleTodoStatus = async (req, res) => {
   try {
     const emp_id = req.user.emp_id;
@@ -179,6 +208,14 @@ exports.toggleTodoStatus = async (req, res) => {
       });
     }
 
+    const today = getISTDateString();
+    const attendance = await Attendance.findOne({ where: { emp_id, date: today } });
+    if (attendance?.work_end) {
+      return res.status(403).json({
+        message: "Work has ended for today. Cannot modify tasks."
+      });
+    }
+    
     if (!action) {
       return res.status(400).json({ message: "Action is required (start, pause, complete)" });
     }
@@ -232,6 +269,21 @@ exports.toggleTodoStatus = async (req, res) => {
 
             todo.status = "start";
         }
+
+        else if (todo.status === "complete") {
+        const { remark } = req.body;
+
+        if (!remark || remark.trim() === "") {
+            return res.status(400).json({ message: "Remark is required to restart a completed task" });
+        }
+
+        // Save remark (append to key_learning or overwrite as per your logic)
+        todo.key_learning = remark;
+
+        todo.start_time = currentTime; // reset start_time
+        todo.status = "start";
+        // total_tracked_time is kept as-is
+    }
 
         await todo.save();
         return res.json({ message: "Task started/resumed", todo });
@@ -288,6 +340,20 @@ exports.toggleTodoStatus = async (req, res) => {
       todo.status = "complete";
       //todo.start_time = null;
     }
+
+    // RESET
+    else if (action === "reset") {
+
+        // Reset all tracking
+        todo.start_time = null;
+        todo.total_tracked_time = "00:00:00";
+        todo.status = "not_started"; // or whatever default you use
+        todo.key_learning = null; // optional: clear any notes if needed
+
+        await todo.save();
+        return res.json({ message: "Task has been reset to start over", todo });
+    }
+
 
     else {
       return res.status(400).json({ message: "Invalid action" });

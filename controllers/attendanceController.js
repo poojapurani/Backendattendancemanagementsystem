@@ -3,9 +3,30 @@ const User = require("../models/User");
 const Todo = require("../models/Todo");
 const Setting = require("../models/Setting");
 
-
 // Punch In
-const { Op } = require("sequelize");
+const { Op, fn, col, literal } = require("sequelize");
+const sequelize = require("../config/db");
+
+function getISTDate() {
+  return new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+}
+
+
+function getISTDateString() {
+  const d = getISTDate();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getISTTimeString() {
+  const d = getISTDate();
+  const hours = String(d.getHours()).padStart(2, "0");
+  const minutes = String(d.getMinutes()).padStart(2, "0");
+  const seconds = String(d.getSeconds()).padStart(2, "0");
+  return `${hours}:${minutes}:${seconds}`;
+}
 
 function formatLateMinutes(totalMinutes) {
   const hours = Math.floor(totalMinutes / 60);
@@ -23,90 +44,62 @@ function formatLateMinutes(totalMinutes) {
 // Punch In
 exports.punchIn = async (req, res) => {
   try {
-    // const userId = req.user.id;
     const emp_id = req.user.emp_id;
     const user = await User.findOne({ where: { emp_id } });
 
-    const fetchIds = [user.emp_id, ...(user.previous_emp_ids || [])];
-    const today = new Date().toISOString().split("T")[0];
-    const now = new Date();
-    const currentTime = now.toTimeString().slice(0, 8); // HH:MM:SS
+    const today = getISTDateString();
+    const nowIST = getISTDate();               // PURE IST Date object
+    const currentTime = getISTTimeString();    // IST HH:MM:SS
 
     const reportingTime = new Date(`${today}T09:30:00`);
     const halfDayCut = new Date(`${today}T13:30:00`);
-    const absentCut = new Date(`${today}T19:00:00`);
+    //const absentCut = new Date(`${today}T14:00:00`);
 
-    // Already punched in?
-    const already = await Attendance.findOne({
-      where: { emp_id, date: today }
-    });
-
+    const already = await Attendance.findOne({ where: { emp_id, date: today } });
     if (already) {
       return res.status(400).json({ message: "Already punched in today", success: false });
     }
 
-    // Block after 2 PM = absent
-    
-    // Strict ABSENT Rule
-    if (now > absentCut) {
-      await Attendance.create({
-        emp_id,
-        date: today,
-        time_in: null,
-        status: "absent"
-      });
+    // if (nowIST > absentCut) {
+    //   await Attendance.create({
+    //     emp_id,
+    //     date: today,
+    //     time_in: null,
+    //     status: "absent"
+    //   });
 
-      return res.status(400).json({
-        message: "You are marked absent today (Login allowed only before 2 PM)",
-        success: false
-      });
-    }
-
-   
+    //   return res.status(400).json({
+    //     message: "You are marked absent today (Login allowed only before 2 PM)",
+    //     success: false
+    //   });
+    // }
 
     const punchInTime = new Date(`${today}T${currentTime}`);
     let status = "present";
     let late_by = null;
-    let lateMinutes = 0;
 
-    // Late login
     if (punchInTime > reportingTime) {
       const diffMs = punchInTime - reportingTime;
-      const diffMin = Math.floor(diffMs / (1000 * 60));
+      const diffMin = Math.floor(diffMs / 60000);
       late_by = formatLateMinutes(diffMin);
       status = "Late";
     }
 
-    // If login after 1:30 → half day
-    if (now > halfDayCut) {
+    if (nowIST > halfDayCut) {
       status = "half-day";
     }
 
-    let isPresent = false;
-
-    const normalized = status.trim().toLowerCase();
-    if (["present", "late", "half-day"].includes(normalized)) {
-      isPresent = true;
-    }
     const record = await Attendance.create({
-      // user_id: userId,
       emp_id,
       date: today,
-      time_in: currentTime,
+      time_in: currentTime,    // IST
       status
-     
     });
-
-    
-
 
     res.json({
       message: "Punch-in recorded",
       success: true,
-      // status,
-      // late_by: lateMinutes > 0 ? `${lateMinutes} min late` : "On time",
-      attendance: record,
-      isPresent
+      attendance: record
     });
 
   } catch (err) {
@@ -115,30 +108,39 @@ exports.punchIn = async (req, res) => {
   }
 };
 
+
 exports.startWork = async (req, res) => {
   try {
     const emp_id = req.user.emp_id;
-    const today = new Date().toISOString().slice(0, 10);
-    const now = new Date().toTimeString().split(" ")[0];
+    const today = getISTDateString();
+    const nowIST = getISTTimeString();  // IST
 
-    const todos = await Todo.findAll({ where: { emp_id, status: { [Op.ne]: "complete" } } });
-    if (!todos || todos.length === 0) {
+    const todos = await Todo.findAll({
+      where: { emp_id, status: { [Op.ne]: "complete" } }
+    });
+
+    if (!todos.length) {
       return res.status(403).json({ message: "Cannot start work: no todos assigned." });
     }
 
     let record = await Attendance.findOne({ where: { emp_id, date: today } });
+
     if (!record) {
-      record = await Attendance.create({ emp_id, date: today, work_start: now });
-      return res.json({ message: "Work started", work_start: now });
+      record = await Attendance.create({ emp_id, date: today, work_start: nowIST });
+      return res.json({ message: "Work started", work_start: nowIST });
     }
 
     if (record.work_start) {
-      return res.status(400).json({ message: "Work already started", work_start: record.work_start });
+      return res.status(400).json({
+        message: "Work already started",
+        work_start: record.work_start
+      });
     }
 
-    record.work_start = now;
+    record.work_start = nowIST;
     await record.save();
-    res.json({ message: "Work started", work_start: now });
+
+    res.json({ message: "Work started", work_start: nowIST });
 
   } catch (error) {
     console.error(error);
@@ -147,11 +149,12 @@ exports.startWork = async (req, res) => {
 };
 
 
+
 exports.endWork = async (req, res) => {
   try {
     const emp_id = req.user.emp_id;
-    const today = new Date().toISOString().slice(0, 10);
-    const now = new Date().toTimeString().split(" ")[0];
+    const today = getISTDateString();
+    const nowIST = getISTTimeString();
 
     const record = await Attendance.findOne({ where: { emp_id, date: today } });
     if (!record || !record.work_start) {
@@ -159,37 +162,26 @@ exports.endWork = async (req, res) => {
     }
 
     if (record.work_end) {
-      return res.status(400).json({
-        message: "Work already ended",
-        work_end: record.work_end
-      });
+      return res.status(400).json({ message: "Work already ended", work_end: record.work_end });
     }
 
-    // ❗ Check if any todo is in progress
-    const activeTodos = await Todo.findAll({
-      where: {
-        emp_id,
-        status: "start" // any task currently running
-      }
-    });
-
+    const activeTodos = await Todo.findAll({ where: { emp_id, status: "start" } });
     if (activeTodos.length > 0) {
       return res.status(403).json({
         message: "Cannot end work: some tasks are still in progress."
       });
     }
 
-    // 🔥 Calculate duration
-    const workDuration = calculateDuration(record.work_start, now);
+    const workDuration = calculateDuration(record.work_start, nowIST);
 
-    record.work_end = now;
-    record.work_duration = workDuration; // ⬅ save duration
+    record.work_end = nowIST;
+    record.work_duration = workDuration;
     await record.save();
 
     res.json({
       message: "Work ended",
       work_start: record.work_start,
-      work_end: now,
+      work_end: nowIST,
       work_duration: workDuration
     });
 
@@ -208,113 +200,144 @@ function secondsToHHMMSS(totalSeconds) {
   return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
 }
 
-function calculateDuration(startTime, endTime) {
-  if (!startTime || !endTime) return null;
-  const start = new Date(`1970-01-01T${startTime}`);
-  const end = new Date(`1970-01-01T${endTime}`);
-  const diffSeconds = Math.max(0, (end - start) / 1000);
-  return secondsToHHMMSS(diffSeconds);
-}
+// const calculateDuration = (start, end) => {
+//   if (!start || !end) return "00:00:00";
 
+//   const s = new Date(`1970-01-01T${start}`);
+//   const e = new Date(`1970-01-01T${end}`);
 
-// Add Lunch Break
-// Break & Lunch APIs
-// Start Normal Break
+//   if (isNaN(s) || isNaN(e)) return "00:00:00";
+
+//   const diff = e - s;
+//   const h = Math.floor(diff / 3600000);
+//   const m = Math.floor((diff % 3600000) / 60000);
+//   const sec = Math.floor((diff % 60000) / 1000);
+
+//   return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+// };
+
+// Add Lunch Break & Normal Break APIs
 exports.startBreak = async (req, res) => {
   try {
     const emp_id = req.user.emp_id;
-    const today = new Date().toISOString().slice(0, 10);
-    const now = new Date().toTimeString().slice(0, 8);
+    const today = getISTDateString();
+    const nowIST = getISTTimeString();
 
     const record = await Attendance.findOne({ where: { emp_id, date: today } });
 
-    if (!record || !record.time_in) return res.status(400).json({ message: "Punch in first!" });
-    
-    // Check if any break/lunch is ongoing
-    if (record.break_start && !record.break_end) return res.status(400).json({ message: "Normal break already started!" });
-    if (record.lunch_start && !record.lunch_end) return res.status(400).json({ message: "Lunch break ongoing, cannot start normal break!" });
+    if (!record || !record.time_in)
+      return res.status(400).json({ message: "Punch in first!" });
 
-    await record.update({ break_start: now, break_end: null });
+    if (record.break_start && !record.break_end)
+      return res.status(400).json({ message: "Normal break already started!" });
+
+    if (record.lunch_start && !record.lunch_end)
+      return res.status(400).json({ message: "Lunch break ongoing!" });
+
+    await record.update({ break_start: nowIST, break_end: null });
+
     const setting = await Setting.findOne();
-    const max_duration_minutes = setting ? setting.break : 30;
+    const max_duration_minutes = setting?.break || 30;
 
-    res.json({ 
-      message: "Break started", 
-      break_start: now,
-      max_duration_minutes
-     });
+    res.json({ message: "Break started", break_start: nowIST, max_duration_minutes });
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server Error" });
   }
 };
+
 
 // End Normal Break
 exports.endBreak = async (req, res) => {
   try {
     const emp_id = req.user.emp_id;
-    const today = new Date().toISOString().slice(0, 10);
-    const now = new Date().toTimeString().slice(0, 8);
+    const today = getISTDateString();
+    const now = getISTTimeString(); // JUST TIME
 
     const record = await Attendance.findOne({ where: { emp_id, date: today } });
-    if (!record || !record.break_start) return res.status(400).json({ message: "Break not started!" });
+    if (!record || !record.break_start)
+      return res.status(400).json({ message: "Break not started!" });
 
     await record.update({ break_end: now });
 
     const duration = calculateDuration(record.break_start, now);
-    res.json({ message: "Break ended", break_end: now, break_duration: duration });
+
+    res.json({
+      message: "Break ended",
+      break_end: now,
+      break_duration: duration
+    });
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server Error" });
   }
 };
+
 
 // Start Lunch Break
 exports.startLunch = async (req, res) => {
   try {
     const emp_id = req.user.emp_id;
-    const today = new Date().toISOString().slice(0, 10);
-    const now = new Date().toTimeString().slice(0, 8);
+    const today = getISTDateString();
+    const now = getISTTimeString();
 
     const record = await Attendance.findOne({ where: { emp_id, date: today } });
-    if (!record || !record.time_in) return res.status(400).json({ message: "Punch in first!" });
+    if (!record || !record.time_in)
+      return res.status(400).json({ message: "Punch in first!" });
 
-    if (record.lunch_start && !record.lunch_end) return res.status(400).json({ message: "Lunch already started!" });
-    if (record.break_start && !record.break_end) return res.status(400).json({ message: "Normal break ongoing, cannot start lunch!" });
+    if (record.lunch_start && !record.lunch_end)
+      return res.status(400).json({ message: "Lunch already started!" });
+
+    if (record.break_start && !record.break_end)
+      return res.status(400).json({ message: "Normal break ongoing!" });
 
     await record.update({ lunch_start: now, lunch_end: null });
+
     const setting = await Setting.findOne();
     const max_duration_minutes = setting ? setting.lunch : 45;
+
     res.json({
-       message: "Lunch started",
-       lunch_start: now,
-       max_duration_minutes
-     });
+      message: "Lunch started",
+      lunch_start: now,
+      max_duration_minutes
+    });
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server Error" });
   }
 };
+
 
 // End Lunch Break
 exports.endLunch = async (req, res) => {
   try {
     const emp_id = req.user.emp_id;
-    const today = new Date().toISOString().slice(0, 10);
-    const now = new Date().toTimeString().slice(0, 8);
+    const today = getISTDateString();
+    const now = getISTTimeString();
 
     const record = await Attendance.findOne({ where: { emp_id, date: today } });
-    if (!record || !record.lunch_start) return res.status(400).json({ message: "Lunch not started!" });
+    if (!record || !record.lunch_start)
+      return res.status(400).json({ message: "Lunch not started!" });
 
     await record.update({ lunch_end: now });
 
     const duration = calculateDuration(record.lunch_start, now);
-    res.json({ message: "Lunch ended", lunch_end: now, lunch_duration: duration });
+
+    res.json({
+      message: "Lunch ended",
+      lunch_end: now,
+      lunch_duration: duration
+    });
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server Error" });
   }
 };
+
 
 
 exports.getTodayAttendanceStatus = async (req, res) => {
@@ -331,7 +354,7 @@ exports.getTodayAttendanceStatus = async (req, res) => {
     }
     const fetchIds = [user.emp_id, ...(user.previous_emp_ids || [])];
 
-    const today = new Date().toISOString().split("T")[0];
+    const today = getISTDateString();
 
     const attendance = await Attendance.findOne({
       where: { emp_id: fetchIds, date: today }
@@ -339,13 +362,22 @@ exports.getTodayAttendanceStatus = async (req, res) => {
 
     const lunch_duration = calculateDuration(
       attendance?.lunch_start,
-      attendance?.lunch_end
+      attendance?.lunch_end,
+      attendance?.date || today
     );
 
     const break_duration = calculateDuration(
       attendance?.break_start,
-      attendance?.break_end
+      attendance?.break_end,
+      attendance?.date || today
     );
+
+    const work_duration = calculateDuration(
+      attendance?.work_start,
+      attendance?.work_end,
+      attendance?.date || today
+    );
+
 
     const attendanceStatus = {
       punched_in: attendance?.time_in ? true : false,
@@ -366,7 +398,7 @@ exports.getTodayAttendanceStatus = async (req, res) => {
       // NEW FIELDS ADDED ⬇⬇⬇
       work_start: attendance?.work_start || null,
       work_end: attendance?.work_end || null,
-      work_duration: attendance?.work_duration || null,
+      work_duration,
       office_hours: attendance?.office_hours || "00:00:00",
       key_learning: attendance?.key_learning || ""
     };
@@ -392,7 +424,8 @@ exports.updateKeyLearning = async (req, res) => {
       return res.status(400).json({ message: "Key learning cannot be empty" });
     }
 
-    const today = new Date().toISOString().slice(0, 10);
+    const today = getISTDateString();
+
 
     const attendance = await Attendance.findOne({
       where: { emp_id, date: today }
@@ -422,7 +455,8 @@ exports.updateKeyLearning = async (req, res) => {
 exports.getTodayKeyLearning = async (req, res) => {
   try {
     const emp_id = req.user.emp_id;
-    const today = new Date().toISOString().slice(0, 10);
+    const today = getISTDateString();
+
 
     const user = await User.findOne({ where: { emp_id } });
     const fetchIds = [user.emp_id, ...(user.previous_emp_ids || [])];
@@ -449,178 +483,56 @@ exports.getTodayKeyLearning = async (req, res) => {
 
 
 
-
 // Punch Out
 exports.punchOut = async (req, res) => {
   try {
-    // const user_id = req.user.id;
-    emp_id = req.user.emp_id;
-    const today = new Date().toISOString().split("T")[0];
-    const now = new Date();
-    const currentTime = now.toTimeString().slice(0, 8);
+    const emp_id = req.user.emp_id;
+    const today = getISTDateString();
+    const nowIST = getISTTimeString();
 
-    const user = await User.findOne({ where: { emp_id } });
-
-    const fetchIds = [user.emp_id, ...(user.previous_emp_ids || [])];
-    const halfDayCut = new Date(`${today}T13:30:00`);
-    const reportingTime = new Date(`${today}T09:30:00`);
-
-    const record = await Attendance.findOne({
-      where: { emp_id, date: today }
-    });
-
-    if (!record) {
-      return res.status(400).json({ message: "You have not punched in today!" });
-    }
+    const record = await Attendance.findOne({ where: { emp_id, date: today } });
+    if (!record) return res.status(400).json({ message: "You have not punched in today!" });
 
     if (record.time_out) {
       return res.status(400).json({ message: "Already punched out today!" });
     }
 
+    if (record.break_start && !record.break_end)
+      return res.status(400).json({ message: "Normal break running!" });
 
-    // 🚫 Normal Break is active
-    if (record.break_start && !record.break_end) {
-      return res.status(400).json({
-        message: "Normal break is running. End it before punch out!"
-      });
-    }
+    if (record.lunch_start && !record.lunch_end)
+      return res.status(400).json({ message: "Lunch break running!" });
 
-    // 🚫 Lunch Break is active
-    if (record.lunch_start && !record.lunch_end) {
-      return res.status(400).json({
-        message: "Lunch break is running. End it before punch out!"
-      });
-    }
+    if (record.work_start && !record.work_end)
+      return res.status(400).json({ message: "End work session first!" });
 
-    // 🚫 WORK SESSION RUNNING
-    if (record.work_start && !record.work_end) {
-      return res.status(400).json({
-        message: "Work session is running. End work session before punch out!"
-      });
-    }
-
-
-    // 🚫 TODO RUNNING (status = start)
-    const runningTodo = await Todo.findOne({
-      where: {
-        emp_id,
-        status: "start"
-      }
-    });
-
+    const runningTodo = await Todo.findOne({ where: { emp_id, status: "start" } });
     if (runningTodo) {
       return res.status(400).json({
-        message: "You have a running task. Pause or complete the todo before punch out!",
+        message: "Complete/pause the todo before punch out!",
         sr_no: runningTodo.sr_no,
         title: runningTodo.title
       });
     }
 
-    // // Working hours calculation
+    // Office hours calculation using IST
+    const office_hours = calculateDuration(record.time_in, nowIST);
 
-    // const timeIn = new Date(`${today}T${record.time_in}`);
-    // let diffMs = now - timeIn;
-
-    // 🔹 Subtract breaks if present
-    // let totalBreakMs = 0;
-
-    // if (record.lunch_start && record.lunch_end) {
-    //   const lunchStart = new Date(`${today}T${record.lunch_start}`);
-    //   const lunchEnd = new Date(`${today}T${record.lunch_end}`);
-    //   totalBreakMs += Math.max(0, lunchEnd - lunchStart);
-    // }
-
-    // if (record.break_start && record.break_end) {
-    //   const breakStart = new Date(`${today}T${record.break_start}`);
-    //   const breakEnd = new Date(`${today}T${record.break_end}`);
-    //   totalBreakMs += Math.max(0, breakEnd - breakStart);
-    // }
-
-    // diffMs -= totalBreakMs;
-
-    // const hours = Math.floor(diffMs / 3600000);
-    // const minutes = Math.floor((diffMs % 3600000) / 60000);
-    // const seconds = Math.floor((diffMs % 60000) / 1000);
-
-    // const working_hours = `${hours.toString().padStart(2, "0")}:${minutes
-    //   .toString()
-    //   .padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
-
-
-    // OFFICE HOURS (simple diff)
-    const timeIn = new Date(`${today}T${record.time_in}`);
-    let diffMs = now - timeIn;
-
-    const ohours = Math.floor(diffMs / 3600000);
-    const ominutes = Math.floor((diffMs % 3600000) / 60000);
-    const oseconds = Math.floor((diffMs % 60000) / 1000);
-
-    const office_hours = `${ohours.toString().padStart(2, "0")}:${ominutes
-      .toString()
-      .padStart(2, "0")}:${oseconds.toString().padStart(2, "0")}`;
-
-    // Save office hours instead of working_hours
-    
-
-    // Convert durations
-    const workSec = toSeconds(record.work_duration);
-    const lunchSec = toSeconds(calculateDuration(record.lunch_start, record.lunch_end));
-    const breakSec = toSeconds(calculateDuration(record.break_start, record.break_end));
-
-    let finalWorkSeconds = workSec - lunchSec - breakSec;
-    if (finalWorkSeconds < 0) finalWorkSeconds = 0;
-
-    const working_hours = secondsToHHMMSS(finalWorkSeconds);
-
-    
-    let finalStatus = record.status;
-
-    // HALF-DAY CONDITIONS:
-    if (now <= halfDayCut) {
-      finalStatus = "half-day";
-    }
-
-    if (timeIn >= halfDayCut) {
-      finalStatus = "half-day"; // logged in after 1:30
-    }
-
-    await record.update({
-      time_out: currentTime,
-      office_hours,
-      working_hours,
-      status: finalStatus
-    });
-
-    // Save key_learning only if punch-out successful
-    if (req.body.key_learning && req.body.key_learning.trim() !== "") {
-      await Attendance.update(
-        { key_learning: req.body.key_learning },
-        {
-          where: {
-            emp_id,
-            date: new Date().toISOString().slice(0, 10)
-          }
-        }
-      );
-    }
-
+    record.time_out = nowIST;
+    record.office_hours = office_hours;
+    await record.save();
 
     res.json({
-      message: "Punch-out recorded",
-      time_in: record.time_in,
-      time_out: currentTime,
-      //office_hours: attendance?.office_hours || "00:00:00",
-      //working_hours,
-      status: finalStatus
+      message: "Punch-out successful",
+      time_out: nowIST,
+      office_hours
     });
 
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: "Server Error" });
+    res.status(500).json({ message: "Server error", err });
   }
 };
-
-
 
 // Get logged-in user's history
 
@@ -635,45 +547,6 @@ function getDatesArray(start, end) {
 
   return arr;
 }
-
-// function groupByWeek(records) {
-//   const weeks = {};
-//   records.forEach(r => {
-//     const weekNumber = getWeekNumber(new Date(r.date));
-//     if (!weeks[weekNumber]) weeks[weekNumber] = [];
-//     weeks[weekNumber].push(r);
-//   });
-
-//   return Object.keys(weeks).map(week => ({
-//     week,
-//     records: weeks[week]
-//   }));
-// }
-
-// function getWeekNumber(d) {
-//   d = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
-//   const dayNum = d.getUTCDay() || 7;
-//   d.setUTCDate(d.getUTCDate() + 4 - dayNum);
-//   const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
-//   return Math.ceil(((d - yearStart) / 86400000 + 1) / 7);
-// }
-
-// function groupByMonth(records) {
-//   const months = {};
-
-//   records.forEach(r => {
-//     const monthKey = r.date.substring(0, 7); // YYYY-MM
-//     if (!months[monthKey]) months[monthKey] = [];
-//     months[monthKey].push(r);
-//   });
-
-//   return Object.keys(months).map(month => ({
-//     month,
-//     records: months[month]
-//   }));
-// }
-
-
 
 function secondsToHHMMSS(total) {
   const h = Math.floor(total / 3600);
@@ -706,9 +579,9 @@ exports.getHistory = async (req, res) => {
     const joiningDate = new Date(user.joining_date);
     const joiningStr = joiningDate.toISOString().split("T")[0];
 
-    const today = new Date();
+    const today = getISTDate();
     today.setHours(23, 59, 59, 999);
-    const todayStr = today.toISOString().split("T")[0];
+    const todayStr = getISTDateString();
 
     // Fetch DB attendance
     const dbRecords = await Attendance.findAll({
@@ -802,8 +675,17 @@ exports.getHistory = async (req, res) => {
         const [h, m, s] = working_hours.split(":").map(Number);
         totalSeconds += h * 3600 + m * 60 + s;
 
-        if (r.break_start && r.break_end) break_duration = calculateDuration(r.break_start, r.break_end);
-        if (r.lunch_start && r.lunch_end) lunch_duration = calculateDuration(r.lunch_start, r.lunch_end);
+        if (r.break_start && r.break_end) 
+          break_duration = calculateDuration(r.break_start, r.break_end, r.date);
+
+        if (r.lunch_start && r.lunch_end) 
+          lunch_duration = calculateDuration(r.lunch_start, r.lunch_end, r.date);
+
+        let work_duration = "00:00:00";
+        if (r.work_start && r.work_end) 
+            work_duration = calculateDuration(r.work_start, r.work_end, r.date);
+
+
       }
 
       return { 
@@ -850,10 +732,10 @@ exports.getHistory = async (req, res) => {
         startStr = todayStr;
       } else {
         // week starts Monday
-        const start = new Date(today);
+        const start = getISTDate();
         const diff = (day + 6) % 7; // convert Sun(0)→6
-        start.setDate(today.getDate() - diff);
-        startStr = start.toISOString().split("T")[0];
+        start.setDate(today.getISTDate() - diff);
+        startStr = start.getISTDateString();
       }
 
       finalRecords = allFormatted.filter(r => r.date >= startStr && r.date <= todayStr);
@@ -886,7 +768,7 @@ exports.getHistory = async (req, res) => {
 
         // Requested month start and end
         let startS = `${year}-${String(month).padStart(2, "0")}-01`;
-        let endS = `${year}-${String(month).padStart(2, "0")}-${new Date(year, month, 0).getDate()}`;
+        let endS = `${year}-${String(month).padStart(2, "0")}-${getISTDate()}`;
 
         // If requested month **ends before joining** → truly no data
         if (new Date(endS) < joiningDate) {
@@ -914,11 +796,6 @@ exports.getHistory = async (req, res) => {
           (r) => r.date >= startS && r.date <= endS
         );
       }
-
-
-
-
-
 
     const startDate = startStr;
     const endDate = todayStr;
@@ -1125,6 +1002,7 @@ exports.editAttendance = async (req, res) => {
 exports.adminAddAttendance = async (req, res) => {
   try {
     const admin = req.user;  // logged-in admin info
+    console.log(admin);
     if (!admin) {
       return res.status(401).json({ message: "Unauthorized" });
     }
@@ -1147,7 +1025,7 @@ exports.adminAddAttendance = async (req, res) => {
       return res.status(400).json({ message: "emp_id is required in body" });
     }
 
-    const date = inputDate || new Date().toISOString().slice(0, 10);
+    const date = inputDate || getISTDateString();;
 
     const existing = await Attendance.findOne({ where: { emp_id, date } });
     if (existing) {
@@ -1166,9 +1044,13 @@ exports.adminAddAttendance = async (req, res) => {
       working_hours = `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
     }
     let work_duration = null;
-      if (work_start && work_end) {
-        work_duration = calculateDuration(work_start, work_end);
-      }
+    if (work_start && work_end) {
+      console.log("Calculating work_duration with:", { work_start, work_end, date });
+      work_duration = calculateDuration(work_start, work_end, date);
+      console.log("work_duration:", work_duration);
+
+    }
+
     const newRecord = await Attendance.create({
       emp_id,
       date,
@@ -1196,179 +1078,161 @@ exports.adminAddAttendance = async (req, res) => {
   }
 };
 
-
-
-
 // Convert seconds → HH:MM:SS
-function secondsToHHMMSS(seconds) {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
-  return `${h.toString().padStart(2, "0")}:${m
-    .toString()
-    .padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+// function secondsToHHMMSS(seconds) {
+//   const h = Math.floor(seconds / 3600);
+//   const m = Math.floor((seconds % 3600) / 60);
+//   const s = seconds % 60;
+//   return `${h.toString().padStart(2, "0")}:${m
+//     .toString()
+//     .padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+// }
+
+// ---------------- HELPERS ----------------
+function getISTDateObj() {
+  const now = new Date();
+  // IST = UTC +5:30
+  return new Date(now.getTime() + 5.5 * 60 * 60 * 1000);
 }
 
+function getISTDateString(date = null) {
+  const d = date ? new Date(date) : getISTDateObj();
+  return d.toISOString().slice(0, 10);
+}
+
+function calculateDuration(startTime, endTime, date) {
+  if (!startTime || !endTime) return "00:00:00"; // or "not provided"
+
+  const start = new Date(`${date}T${startTime}`);
+  const end = new Date(`${date}T${endTime}`);
+  const diff = end - start;
+
+  if (isNaN(diff) || diff < 0) return "00:00:00";
+
+  const h = Math.floor(diff / 3600000);
+  const m = Math.floor((diff % 3600000) / 60000);
+  const s = Math.floor((diff % 60000) / 1000);
+
+  return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
+}
+
+
+
+function secondsToHHMMSS(sec) {
+  const h = String(Math.floor(sec / 3600)).padStart(2, "0");
+  const m = String(Math.floor((sec % 3600) / 60)).padStart(2, "0");
+  const s = String(sec % 60).padStart(2, "0");
+  return `${h}:${m}:${s}`;
+}
+
+// ---------------- MAIN FUNCTION ----------------
 exports.getAttendanceReport = async (req, res) => {
   try {
-    //console.log("===== getAttendanceReport START =====");
-    
     const { empId } = req.params;
     const { periodType } = req.query;
 
-   console.log("1️⃣  Incoming Request:", { empId, periodType });
-
     if (!periodType || !["daily", "weekly", "monthly", "yearly"].includes(periodType)) {
-      //console.log("❌ Invalid periodType");
       return res.status(400).json({ message: "Invalid periodType" });
     }
 
+    // Fetch user
     const user = await User.findOne({
-  where: {
-    [Op.or]: [
-      { emp_id: empId },
-      { previous_emp_ids: { [Op.like]: `%${empId}%` } }
-    ]
-  }
-});
-    //console.log("2️⃣  User fetched:", user?.emp_id || "NOT FOUND");
-    const previousIds = user.previous_emp_ids
-  ? user.previous_emp_ids.split(",")
-  : [];
+      where: {
+        [Op.or]: [
+          { emp_id: empId },
+          { previous_emp_ids: { [Op.like]: `%${empId}%` } },
+        ],
+      },
+      order: [
+        ['id', 'DESC']
+      ]
+    });
 
-const fetchIds = [user.emp_id, ...previousIds];
+    if (!user) return res.status(404).json({ message: "User not found" });
 
-    if (!user) return res.status(404).json({ message: "Employee not found" });
+    const previousIds = user.previous_emp_ids ? user.previous_emp_ids.split(",") : [];
+    const fetchIds = [user.emp_id, ...previousIds];
 
-    const today = new Date();
-    const todayStr = today.toISOString().slice(0, 10);
+    const today = getISTDateObj();
+    const todayStr = getISTDateString(today);
     const joiningDate = new Date(user.joining_date);
-    const joiningStr = joiningDate.toISOString().slice(0, 10);
+    const joiningStr = getISTDateString(joiningDate);
 
-    //console.log("3️⃣  Dates:", { todayStr, joiningStr });
+    let startDate, endDate = today;
 
-    let startDate;
-    let endDate = today;
-
-    // ---------------- DAILY ----------------
+    // ---------------- PERIODS ----------------
     if (periodType === "daily") {
       startDate = endDate = today;
-      //console.log("📅 DAILY report:", { startDate, endDate });
-    }
-
-    // ---------------- WEEKLY ----------------
-    if (periodType === "weekly") {
+    } else if (periodType === "weekly") {
       const day = today.getDay();
       const mondayOffset = day === 0 ? -6 : 1 - day;
-
       const weekStart = new Date(today);
       weekStart.setDate(today.getDate() + mondayOffset);
-
       startDate = joiningDate > weekStart ? joiningDate : weekStart;
-
-     // console.log("📅 WEEKLY report:", { startDate, endDate });
-    }
-
-    // ---------------- MONTHLY ----------------
-    if (periodType === "monthly") {
+    } else if (periodType === "monthly") {
       const isFirstMonth =
         today.getFullYear() === joiningDate.getFullYear() &&
         today.getMonth() === joiningDate.getMonth();
-
-      if (isFirstMonth) {
-        startDate = new Date(joiningDate);
-      } else {
-        startDate = new Date(`${today.getFullYear()}-${today.getMonth() + 1}-01`);
-      }
-
-      endDate = new Date(`${today.getFullYear()}-${today.getMonth() + 1}-${today.getDate()}`);
-
-      // console.log("StartDate =", startDate.toLocaleDateString("en-CA"));
-      // console.log("EndDate   =", endDate.toLocaleDateString("en-CA"));
-    }else if (periodType === "yearly") {
+      startDate = isFirstMonth
+        ? joiningDate
+        : new Date(today.getFullYear(), today.getMonth(), 1);
+      endDate = today;
+    } else if (periodType === "yearly") {
       const year = parseInt(req.query.year);
-      const month = parseInt(req.query.month); // 1-12
-
+      const month = parseInt(req.query.month);
       if (!year || !month || month < 1 || month > 12) {
         return res.status(400).json({ message: "Please provide valid year & month" });
       }
-
       let startS = `${year}-${String(month).padStart(2, "0")}-01`;
       let endS = `${year}-${String(month).padStart(2, "0")}-${new Date(year, month, 0).getDate()}`;
 
-      // ✅ Check if requested period is before joining date
-      if (new Date(endS) < joiningDate) {
-        return res.status(200).json({
+      if (new Date(endS) < joiningDate)
+        return res.json({
           message: "No data available before joining date",
-          empId: user.fetchIds,
+          empId: user.emp_id,
           name: user.name,
           joining_date: joiningStr,
           periodType,
           startDate: null,
           endDate: null,
-          records: []
+          records: [],
         });
-      }
 
-      // Adjust for joining date
       if (new Date(startS) < joiningDate) startS = joiningStr;
-      // Adjust for today
       if (new Date(endS) > today) endS = todayStr;
 
       startDate = new Date(startS);
       endDate = new Date(endS);
     }
 
-
-    // console.log("4️⃣  FINAL Date Range:", {
-    //   startDate: startDate.toISOString().slice(0, 10),
-    //   endDate: endDate.toISOString().slice(0, 10),
-    // });
-
     // ---------------- FETCH ATTENDANCE ----------------
     const records = await Attendance.findAll({
       where: {
         emp_id: { [Op.in]: fetchIds },
-
-        date: {
-          [Op.between]: [
-            startDate.toISOString().slice(0, 10),
-            endDate.toISOString().slice(0, 10),
-          ],
-        },
+        date: { [Op.between]: [getISTDateString(startDate), getISTDateString(endDate)] },
       },
       include: [{ model: User, attributes: ["name", "emp_id", "department"] }],
       order: [["date", "ASC"]],
     });
 
-    // console.log("5️⃣  DB Records Fetched:", records.length);
-
     const recordMap = {};
-    records.forEach(r => {
-      recordMap[r.date] = r;
-    });
+    records.forEach(r => { recordMap[r.date] = r; });
 
     const firstPunchDate = records.length ? records[0].date : null;
-
-    // console.log("6️⃣  First Punch Date:", firstPunchDate);
 
     // ---------------- BUILD FULL RECORDS ----------------
     const fullRecords = [];
     let totalSeconds = 0;
-    let present = 0;
-    let absent = 0;
+    let present = 0, absent = 0;
 
     let ptr = new Date(startDate);
-    // console.log("7️⃣  Building full date range records...");
-
     while (ptr <= endDate) {
-      const dateStr = ptr.toISOString().slice(0, 10);
+      const dateStr = getISTDateString(ptr);
       const entry = recordMap[dateStr];
 
       let status = "not set";
       let isPresent = "not set";
-      let time_in = null;
-      let time_out = null;
+      let time_in = null, time_out = null;
       let working_hours = "00:00:00";
 
       if (entry) {
@@ -1383,16 +1247,7 @@ const fetchIds = [user.emp_id, ...previousIds];
         isPresent = ["present", "late", "half-day"].includes(status);
         if (isPresent) present++;
         if (entry.status === "absent") absent++;
-        // console.log(`   ✔ ${dateStr} → PRESENT (${status})`);
-      }
-      // BEFORE FIRST PUNCH → NOT SET
-      if (!entry && (!firstPunchDate || dateStr < firstPunchDate) && dateStr >= joiningStr) {
-        status = "not set";
-        isPresent = "not set";
-      }
-
-      // AFTER FIRST PUNCH → ABSENT
-      else if (firstPunchDate && !entry && dateStr > firstPunchDate && dateStr < todayStr) {
+      } else if (firstPunchDate && dateStr > firstPunchDate && dateStr < todayStr) {
         status = "absent";
         isPresent = false;
         absent++;
@@ -1405,22 +1260,18 @@ const fetchIds = [user.emp_id, ...previousIds];
             time_in: null,
             time_out: null,
             working_hours: "00:00:00",
-            status: "absent"
-          }
+            status: "absent",
+          },
         });
       }
 
-      let break_duration = "00:00:00";
-      let lunch_duration = "00:00:00";
+      let break_duration = entry?.break_start && entry?.break_end
+        ? calculateDuration(entry.break_start, entry.break_end)
+        : "00:00:00";
 
-      if (entry && entry.break_start && entry.break_end) {
-        break_duration = calculateDuration(entry.break_start, entry.break_end);
-      }
-
-      if (entry && entry.lunch_start && entry.lunch_end) {
-        lunch_duration = calculateDuration(entry.lunch_start, entry.lunch_end);
-      }
-
+      let lunch_duration = entry?.lunch_start && entry?.lunch_end
+        ? calculateDuration(entry.lunch_start, entry.lunch_end)
+        : "00:00:00";
 
       fullRecords.push({
         date: dateStr,
@@ -1438,45 +1289,40 @@ const fetchIds = [user.emp_id, ...previousIds];
         lunch_end: entry?.lunch_end || null,
         break_start: entry?.break_start || null,
         break_end: entry?.break_end || null,
-
         User: {
           name: user.name,
-          emp_id: user.emp_id,
+          empId: user.emp_id,
+          previous_emp_ids: previousIds,
+          all_ids_used: fetchIds,
           department: user.department,
         },
       });
 
-
       ptr.setDate(ptr.getDate() + 1);
     }
-    // console.log("8️⃣  Summary:", { present, absent });
 
     const totalWorkingHours = secondsToHHMMSS(totalSeconds);
 
-    // console.log("9️⃣  Total Working Hours:", totalWorkingHours);
-
     // ---------------- RESPONSE ----------------
-    //console.log("===== getAttendanceReport END =====");
-
     res.json({
       empId: user.emp_id,
       name: user.name,
       department: user.department,
       joining_date: joiningStr,
       periodType,
-      startDate: startDate.toISOString().slice(0, 10),
-      endDate: endDate.toISOString().slice(0, 10),
+      startDate: getISTDateString(startDate),
+      endDate: getISTDateString(endDate),
       present,
       absent,
       totalWorkingHours,
       records: fullRecords,
     });
-
   } catch (err) {
     console.error("❌ Report Error:", err);
     res.status(500).json({ error: err.message });
   }
 };
+
 
 // ----------------- Utilities -----------------
 
@@ -1503,17 +1349,24 @@ const secondsToHHMM = sec => {
 
 // Get next working day (skip weekends)
 function nextWorkingDay() {
-  const today = new Date();
-  let next = new Date(today);
-  next.setDate(next.getDate() + 1); // move to tomorrow
+  const today = getISTDate(); // Date object in IST
+  const next = new Date(today); // clone today
+  next.setDate(today.getDate() + 1); // move to tomorrow
 
-  // ❌ skip only Sunday
-  if (next.getDay() === 0) {  // 0 = Sunday
+  // skip Sunday (0 = Sunday)
+  if (next.getDay() === 0) {
     next.setDate(next.getDate() + 1); // move to Monday
   }
 
-  return next.toISOString().split("T")[0];
+  // Format as YYYY-MM-DD
+  const yyyy = next.getFullYear();
+  const mm = String(next.getMonth() + 1).padStart(2, "0"); // Months are 0-based
+  const dd = String(next.getDate()).padStart(2, "0");
+
+  return `${yyyy}-${mm}-${dd}`;
 }
+
+
 
 // ----------------- Daily Log API -----------------
 exports.getDailyLog = async (req, res) => {
@@ -1522,7 +1375,7 @@ exports.getDailyLog = async (req, res) => {
     const { date } = req.query;
 
     // --- SELECT DATE: user input OR today's date ---
-    const selectedDate = date ? new Date(date) : new Date();
+    const selectedDate = date ? new Date(date) : getISTDate();
     const selectedDateStr = selectedDate.toISOString().split("T")[0];
 
     
@@ -1648,5 +1501,281 @@ exports.getDailyLog = async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Server error", error });
+  }
+};
+
+exports.adminGetLog = async (req, res) => {
+  try {
+    const { emp_id, date, week_start_date, month, type } = req.query;
+
+    if (!emp_id) return res.status(400).json({ message: "Employee ID is required" });
+    if (!type || !["daily", "weekly", "monthly"].includes(type))
+      return res.status(400).json({ message: "Type must be one of daily, weekly, monthly" });
+
+    // Validate employee
+    const user = await User.findOne({ where: { emp_id } });
+    if (!user) return res.status(404).json({ message: "Employee not found" });
+    const fetchIds = [user.emp_id, ...(user.previous_emp_ids || [])];
+
+    if (type === "daily") {
+      // --- Daily log ---
+      const selectedDate = date ? new Date(date) : getISTDate();
+      const selectedDateStr = selectedDate.toISOString().split("T")[0];
+
+      const todos = await Todo.findAll({
+        where: {
+          emp_id: fetchIds,
+          [Op.or]: [
+            { date: selectedDateStr },
+            { date: { [Op.lt]: selectedDateStr }, status: { [Op.in]: ["pause", "not_started"] } }
+          ]
+        },
+        order: [["date", "ASC"], ["sr_no", "ASC"]],
+      });
+
+      const completed = [], pending = [], nextDay = [], keyLearnings = [];
+
+      todos.forEach(todo => {
+        const timeSpent = todo.total_tracked_time ? secondsToHHMM(toSeconds(todo.total_tracked_time)) : "00:00";
+
+        if (todo.status === "complete") {
+          completed.push({
+            sr_no: todo.sr_no,
+            title: todo.title,
+            description: todo.description,
+            assigned_by: todo.assigned_by || "N/A",
+            time_spent: timeSpent,
+            remark: todo.remark || ""
+          });
+          if (todo.key_learning) keyLearnings.push(todo.key_learning);
+        } else if (todo.status === "pause") {
+          pending.push({
+            sr_no: todo.sr_no,
+            title: todo.title,
+            description: todo.description,
+            assigned_by: todo.assigned_by || "N/A",
+            reason_for_delay: todo.remark || "",
+            planned_completion_date: nextWorkingDay(),
+            time_spent: timeSpent
+          });
+          if (todo.key_learning) keyLearnings.push(todo.key_learning);
+        } else if (todo.status === "not_started") {
+          nextDay.push({
+            sr_no: todo.sr_no,
+            title: todo.title,
+            description: todo.description,
+            assigned_by: todo.assigned_by || "N/A",
+            priority: todo.priority
+          });
+        }
+      });
+
+      // Attendance
+      const attendance = await Attendance.findOne({ where: { emp_id, date: selectedDateStr } });
+
+      const dailyLog = {
+        header: {
+          "Employee ID": emp_id,
+          "Employee Name": user.name,
+          "Department": user.team_name,
+          "Supervisor Name": user.supervisor_name || null,
+          "Date": selectedDateStr,
+          "Punch in time": attendance?.time_in || null,
+          "Work Start": attendance?.work_start || null,
+          "Punch out time": attendance?.time_out || null,
+          "Work End": attendance?.work_end || null
+        },
+        tasks_completed_today: completed,
+        pending_tasks: pending,
+        next_day_todo: nextDay,
+        breaks_log: [
+          {
+            sr_no: 1,
+            break_type: "Lunch Break",
+            start_time: attendance?.lunch_start || "",
+            end_time: attendance?.lunch_end || "",
+            duration: attendance?.lunch_start && attendance?.lunch_end
+              ? calculateDuration(attendance.lunch_start, attendance.lunch_end)
+              : "00:00"
+          },
+          {
+            sr_no: 2,
+            break_type: "Normal Break",
+            start_time: attendance?.break_start || "",
+            end_time: attendance?.break_end || "",
+            duration: attendance?.break_start && attendance?.break_end
+              ? calculateDuration(attendance.break_start, attendance.break_end)
+              : "00:00"
+          }
+        ],
+        key_learnings_notes: attendance?.key_learning ? [attendance.key_learning, ...keyLearnings].join("\n") : keyLearnings.join("\n")
+      };
+
+      return res.json({ dailyLog });
+    }
+
+    if (type === "weekly") {
+      if (!week_start_date) return res.status(400).json({ message: "week_start_date is required for weekly log" });
+
+      const startDate = new Date(week_start_date);
+      const endDate = new Date(startDate);
+      endDate.setDate(endDate.getDate() + 5); // 6-day week (Mon → Sat)
+
+      const todos = await Todo.findAll({
+        where: { emp_id: fetchIds, date: { [Op.between]: [startDate.toISOString().split("T")[0], endDate.toISOString().split("T")[0]] } },
+        order: [["date", "ASC"], ["sr_no", "ASC"]]
+      });
+
+      // Tasks Completed
+      const tasksCompleted = todos.filter(t => t.status === "complete").map((t, i) => ({
+        sr_no: i + 1,
+        title: t.title,
+        description: t.description,
+        assigned_by: t.assigned_by || "N/A",
+        completion_date: t.updatedAt.toISOString().split("T")[0],
+        notes: t.remark || ""
+      }));
+
+      // Delays & Missed Goals
+      const delays = todos.filter(t => t.status !== "complete").map((t, i) => ({
+        title: t.title,
+        description: t.description,
+        assigned_by: t.assigned_by || "N/A",
+        reason_for_delay: t.remark || "",
+        plan_for_completion: nextWorkingDay()
+      }));
+
+      // Weekly Log JSON (report template)
+      const weeklyLog = {
+        header: {
+          name: user.name,
+          department: user.team_name,
+          week_covered: `${startDate.toISOString().split("T")[0]} to ${endDate.toISOString().split("T")[0]}`,
+          prepared_by: "Admin"
+        },
+        tasks_completed_this_week: tasksCompleted,
+        weekly_goals_met: [], // can be filled manually
+        delays_missed_goals: delays,
+        todo_next_week: delays.map(d => ({ ...d, priority: "Medium" })),
+        key_learnings_suggestions: todos.map(t => t.key_learning).filter(Boolean).join("\n")
+      };
+
+      return res.json({ weeklyLog });
+    }
+
+    if (type === "monthly") {
+      if (!date) return res.status(400).json({ message: "Date is required for monthly log" });
+
+      const selectedDate = new Date(date);
+      const year = selectedDate.getFullYear();
+      const month = selectedDate.getMonth();
+
+      const monthStart = new Date(year, month, 1);
+      const monthEnd = new Date(year, month + 1, 0);
+
+      const todos = await Todo.findAll({
+        where: { emp_id: fetchIds, date: { [Op.between]: [monthStart.toISOString().split("T")[0], monthEnd.toISOString().split("T")[0]] } },
+        order: [["date", "ASC"], ["sr_no", "ASC"]]
+      });
+
+      // Split month into 6-day weeks (Mon → Sat), week 1 starts from 1st
+      const weeklyGroups = [];
+      let currentWeekStart = new Date(monthStart);
+
+      while (currentWeekStart <= monthEnd) {
+        const currentWeekEnd = new Date(currentWeekStart);
+        currentWeekEnd.setDate(currentWeekEnd.getDate() + 5); // 6-day week
+        if (currentWeekEnd > monthEnd) currentWeekEnd.setDate(monthEnd.getDate());
+
+        const weekTodos = todos.filter(t => {
+          const d = new Date(t.date);
+          return d >= currentWeekStart && d <= currentWeekEnd;
+        });
+
+        if (weekTodos.length > 0) {
+          const tasksCompleted = weekTodos.filter(t => t.status === "complete").map((t, i) => ({
+            sr_no: i + 1,
+            title: t.title,
+            description: t.description,
+            assigned_by: t.assigned_by || "N/A",
+            completion_date: t.updatedAt.toISOString().split("T")[0],
+            notes: t.remark || ""
+          }));
+
+          const delays = weekTodos.filter(t => t.status !== "complete").map(t => ({
+            title: t.title,
+            description: t.description,
+            assigned_by: t.assigned_by || "N/A",
+            reason_for_delay: t.remark || "",
+            plan_for_completion: nextWorkingDay()
+          }));
+
+          weeklyGroups.push({
+            week_start: currentWeekStart.toISOString().split("T")[0],
+            week_end: currentWeekEnd.toISOString().split("T")[0],
+            tasks_completed_this_week: tasksCompleted,
+            weekly_goals_met: [], 
+            delays_missed_goals: delays,
+            todo_next_week: delays.map(d => ({ ...d, priority: "Medium" })),
+            key_learnings_suggestions: weekTodos.map(t => t.key_learning).filter(Boolean).join("\n")
+          });
+        }
+
+        currentWeekStart.setDate(currentWeekStart.getDate() + 6); // next week starts after current week
+      }
+
+      return res.json({
+        emp_name: user.name,
+        department: user.team_name,
+        month: `${year}-${month + 1}`,
+        monthlyLog: weeklyGroups
+      });
+    }
+
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server error", error });
+  }
+};
+
+
+exports.addMissedPunchoutRemark = async (req, res) => {
+  try {
+    if (!req.user || !req.user.emp_id) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const emp_id = req.user.emp_id;
+    const { reason, time } = req.body || {};
+
+    
+
+    // Find the attendance record that has missed punch-out
+    const record = await Attendance.findOne({
+      where: { emp_id, missed_punchout: true }
+    });
+
+    if (!record) {
+      return res.status(400).json({ message: "No pending missed punch-out found" });
+    }
+
+    // Update record with reason and time
+    record.missed_reason = reason;
+    record.missed_time = time;
+    record.time_out = time; // mark as actual punch-out
+    record.missed_punchout = false;
+
+    // Optional: calculate office hours
+    if (record.time_in && time) {
+      record.office_hours = calculateDuration(record.time_in, time);
+    }
+
+    await record.save();
+
+    res.json({ message: "Missed punch-out remark added successfully", record });
+  } catch (err) {
+    console.error("Error in addMissedPunchoutRemark:", err);
+    res.status(500).json({ message: "Server error", err });
   }
 };

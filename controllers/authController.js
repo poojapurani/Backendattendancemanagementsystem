@@ -4,6 +4,9 @@ const User = require("../models/User");
 const Attendance = require("../models/Attendance");
 require("dotenv").config();
 const { Op, fn, col, where } = require("sequelize");
+const Todo = require("../models/Todo");
+
+
 
 /*----------------------------------------------------
     ADMIN REGISTERS FIRST ADMIN ONLY ONCE
@@ -52,45 +55,47 @@ exports.register = async (req, res) => {
       return res.status(400).json({ message: "Missing required fields" });
     }
 
+    // Password validation: exactly 8 chars, uppercase, lowercase, number, special (@ or _)
+    const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@_])[A-Za-z\d@_]{8}$/;
+
+    if (!passwordRegex.test(password)) {
+      return res.status(400).json({
+        message:
+          "Password must be EXACTLY 8 characters and include uppercase, lowercase, number, and special (@ or _ only)"
+      });
+    }
+
     const joining_date = req.body.joining_date 
       ? req.body.joining_date 
       : new Date().toISOString().split("T")[0];
 
-    // TEAM CODE MAP
     const teamCodes = {
       shdpixel: "01",
       metamatrix: "02",
       aibams: "03",
     };
 
-    // 1️⃣ Extract year last 2 digits
-    const year = joining_date.split("-")[0].slice(2); // "2025" → "25"
+    const year = joining_date.split("-")[0].slice(2);
 
-    // 2️⃣ Find last serial no
     const lastUser = await User.findOne({
       where: { member_type, team_name },
       order: [["id", "DESC"]],
     });
 
     let serial = 1;
-
     if (lastUser && lastUser.emp_id) {
-      const lastSerial = lastUser.emp_id.slice(-3); // last 3 digits
+      const lastSerial = lastUser.emp_id.slice(-3);
       serial = parseInt(lastSerial) + 1;
     }
 
-    const serialStr = String(serial).padStart(3, "0"); // 001, 002, 003
-
-    // 3️⃣ Final emp_id generation
+    const serialStr = String(serial).padStart(3, "0");
     const emp_id = `${member_type}${teamCodes[team_name.toLowerCase()]}${year}${serialStr}`;
 
-    // Check existing user
     const existing = await User.findOne({ where: { user_id } });
     if (existing) {
       return res.status(400).json({ message: "User already exists" });
     }
 
-    // 4️⃣ Hash password
     const hashedPassword = await bcrypt.hash(password.trim(), 12);
 
     const newUser = await User.create({
@@ -254,9 +259,40 @@ exports.getAllUsers = async (req, res) => {
 /*---------------------------------------------------------
     FUNCTION: CREATE NEW USER WHEN INT → EMP
 ---------------------------------------------------------*/
-async function createNewEmployeeFromIntern(oldUser, req, res) {
+// ==========================================
+// 🔥 API: Convert Intern → Employee
+// POST /users/convert-intern/:emp_id
+// ==========================================
+exports.convertInternToEmployee = async (req, res) => {
   try {
-    const { name, user_id, department, team_name, joining_date, password } = req.body;
+    const empId = req.params.emp_id;
+
+    // 1) Check intern exists
+    const oldUser = await User.findOne({ where: { emp_id: empId } });
+
+    if (!oldUser)
+      return res.status(404).json({ message: "Intern not found" });
+
+    if (oldUser.member_type !== "INT")
+      return res.status(400).json({ message: "This user is not an intern" });
+
+    // Call your conversion function
+    await convertUser(oldUser, req, res);
+
+  } catch (err) {
+    console.error("Error in conversion:", err);
+    res.status(500).json({ message: "Server error", error: err.message });
+  }
+};
+
+// ==========================================
+// 🔧 Helper Function (your logic here)
+// ==========================================
+async function convertUser(oldUser, req, res) {
+  try {
+    const body = req.body || {};
+    const { name, user_id, department, team_name, joining_date, password } = body;
+
 
     const teamCodes = {
       shdpixel: "01",
@@ -266,14 +302,12 @@ async function createNewEmployeeFromIntern(oldUser, req, res) {
 
     const finalTeamName = (team_name || oldUser.team_name).toLowerCase();
     const teamCode = teamCodes[finalTeamName];
-    if (!teamCode) {
-      return res.status(400).json({ message: "Invalid team_name" });
-    }
+    if (!teamCode) return res.status(400).json({ message: "Invalid team_name" });
 
-    // Extract old year digits: INT010325001 → 25
+    // Extract year from existing intern ID
     const yearDigits = oldUser.emp_id.slice(5, 7);
 
-    // Find last EMP serial for this team + year
+    // Find last created employee in same team+year
     const lastUser = await User.findOne({
       where: { emp_id: { [Op.like]: `EMP${teamCode}${yearDigits}%` } },
       order: [["emp_id", "DESC"]],
@@ -281,28 +315,25 @@ async function createNewEmployeeFromIntern(oldUser, req, res) {
 
     let newSerial = "001";
     if (lastUser) {
-      const lastSerial = parseInt(lastUser.emp_id.slice(-3));
-      newSerial = String(lastSerial + 1).padStart(3, "0");
+      newSerial = String(parseInt(lastUser.emp_id.slice(-3)) + 1).padStart(3, "0");
     }
 
     const newEmpId = `EMP${teamCode}${yearDigits}${newSerial}`;
 
-    // Add old emp_id to previous_emp_ids
+    // Build previous_emp_ids
     const prevIds = oldUser.previous_emp_ids
       ? oldUser.previous_emp_ids.split(",")
       : [];
 
-    if (!prevIds.includes(oldUser.emp_id)) {
-      prevIds.push(oldUser.emp_id);
-    }
+    if (!prevIds.includes(oldUser.emp_id)) prevIds.push(oldUser.emp_id);
 
-    // Hash password if needed
+    // Hash password if changed
     let hashed = oldUser.password;
     if (password && password.trim() !== "") {
       hashed = await bcrypt.hash(password.trim(), 12);
     }
 
-    // Create NEW USER
+    // Create new employee entry
     const newUser = await User.create({
       emp_id: newEmpId,
       name: name || oldUser.name,
@@ -316,21 +347,64 @@ async function createNewEmployeeFromIntern(oldUser, req, res) {
       previous_emp_ids: prevIds.join(","),
     });
 
-    // OPTIONAL: deactivate intern
+    // ------------------------------------------
+    // 🔥 DATA MIGRATION (TODO + ATTENDANCE)
+    // ------------------------------------------
+
+    // 1) Move Todos
+    await Todo.update(
+      { emp_id: newEmpId },
+      { where: { emp_id: oldUser.emp_id } }
+    );
+
+    // 2) Move Attendance (safe insert)
+    const oldAttendance = await Attendance.findAll({
+      where: { emp_id: oldUser.emp_id }
+    });
+
+    for (const rec of oldAttendance) {
+      const alreadyExists = await Attendance.findOne({
+        where: { emp_id: newEmpId, date: rec.date }
+      });
+
+      if (!alreadyExists) {
+        await Attendance.create({
+          emp_id: newEmpId,
+          date: rec.date,
+          time_in: rec.time_in,
+          time_out: rec.time_out,
+          working_hours: rec.working_hours,
+          status: rec.status,
+          break_start: rec.break_start,
+          break_end: rec.break_end,
+          lunch_start: rec.lunch_start,
+          lunch_end: rec.lunch_end,
+          work_start: rec.work_start,
+          work_end: rec.work_end,
+          work_duration: rec.work_duration,
+          key_learning: rec.key_learning,
+          office_hours: rec.office_hours,
+        });
+      }
+    }
+
+    // Deactivate intern user
     await oldUser.update({ status: "deactivated" });
 
-    return res.status(201).json({
-      message: "INT upgraded to EMP - new user created successfully",
+    return res.status(200).json({
+      message: "Intern successfully converted to Employee",
       new_emp_id: newEmpId,
-      new_user: newUser,
-      old_user_status: "deactivated",
+      old_emp_id: oldUser.emp_id,
+      user: newUser,
     });
 
   } catch (err) {
-    console.error("INT → EMP Error:", err);
-    res.status(500).json({ message: "Failed to upgrade user", error: err.message });
+    console.error("Conversion Error:", err);
+    res.status(500).json({ message: "Failed to convert intern", error: err.message });
   }
 }
+
+
 
 
 /*---------------------------------------------------------
@@ -415,15 +489,20 @@ exports.deleteUser = async (req, res) => {
     // Check if user is already deactivated
     if (user.status === "deactivated") {
       return res.status(400).json({
-        message: "User is already deactivated"
+        message: "User is already deactivated",
+        emp_id: user.emp_id,
+        status: user.status
       });
     }
 
     // Deactivate the user instead of deleting
-    await user.update({ status: "deactivated" });
+    const updatedUser = await user.update({ status: "deactivated" });
 
     res.status(200).json({
-      message: "User deactivated successfully! No data deleted."
+      message: "User deactivated successfully! No data deleted.",
+      emp_id: updatedUser.emp_id,
+      status: updatedUser.status,
+      deactivatedAt: new Date()  // optional: timestamp of deactivation
     });
 
   } catch (err) {

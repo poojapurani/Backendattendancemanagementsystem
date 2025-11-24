@@ -13,6 +13,7 @@ router.post("/login", authController.login);
 // 📌 Attendance status route 
 // router.get("/today-status", verifyToken, authController.getTodayAttendanceStatus);
 
+router.post("/convert-intern/:emp_id",verifyToken, verifyAdmin, authController.convertInternToEmployee);
 
 
 //admin

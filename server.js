@@ -2,13 +2,17 @@ const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
 const sequelize = require("./config/db"); // Sequelize instance
+const Attendance = require("./models/Attendance");
+const User = require("./models/User");
+const { Op } = require("sequelize");
+const authMiddleware = require('./middlewares/authMiddleware');
 
 dotenv.config();
 
 const app = express();
 
 const corsOptions = {
-  origin: "https://3945c95c-8d3d-4e14-9792-042025856c73-00-1k33g8iaa9jmx.pike.replit.dev",
+  origin: "https://51978c00-27d3-48a8-9555-1bf28f87d2de-00-3huqj24jmr212.sisko.replit.dev",
   methods: "GET,HEAD,PUT,PATCH,POST,DELETE",
   credentials: true,
 };
@@ -16,6 +20,44 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 app.use(express.json());
+
+function isServerInIST() {
+  const offsetMinutes = new Date().getTimezoneOffset(); 
+  // IST = UTC+5:30 → offset = -330
+  return offsetMinutes === -330;
+}
+
+const SERVER_IS_IST = isServerInIST();
+
+console.log("========== TIMEZONE CHECK ==========");
+console.log("Server Timezone:", SERVER_IS_IST ? "IST (UTC+5:30)" : "NOT IST (Probably UTC)");
+console.log("====================================");
+
+async function flagMissedPunchouts() {
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+
+  const yDate = yesterday.toISOString().split("T")[0];
+
+  // Find all attendance records of yesterday with time_in but no time_out
+  const missedRecords = await Attendance.findAll({
+    where: {
+      date: yDate,
+      time_in: { [Op.ne]: null },
+      time_out: null
+    }
+  });
+
+  for (const record of missedRecords) {
+    record.missed_punchout = true;
+    record.time_out = "Not Provided"; // mark as not provided
+    await record.save();
+  }
+
+  console.log(`Flagged ${missedRecords.length} missed punch-outs from ${yDate}`);
+}
+
 
 // 📌 Load Models BEFORE associations
 require("./models/User");
@@ -29,7 +71,12 @@ applyAssociations();
 
 // 📌 Sync models after associations
 sequelize.sync()
-  .then(() => console.log("📦 Models synced with database"))
+  .then(async () => {
+    console.log("📦 Models synced with database");
+
+    // Flag any missed punch-outs from yesterday
+    await flagMissedPunchouts();
+  })
   .catch(err => console.error("❌ Sync error:", err));
 
 
@@ -43,9 +90,22 @@ const settingsRoutes = require("./routes/settingsRoutes");
 app.use("/api/settings", settingsRoutes);
 
 app.use("/api/auth", authRoutes);
-app.use("/api/attendance", attendanceRoutes);
-app.use("/api/dashboard", dashboardRoutes);
-app.use("/api/todos", todoRoutes);
+
+app.use("/api/todos",authMiddleware.verifyToken, authMiddleware.requireMissedPunchoutRemark, todoRoutes);
+
+app.use(
+  "/api/attendance",
+  authMiddleware.verifyToken,
+  authMiddleware.requireMissedPunchoutRemark,
+  attendanceRoutes
+);
+
+app.use(
+  "/api/dashboard",
+  authMiddleware.verifyToken,
+  authMiddleware.requireMissedPunchoutRemark,
+  dashboardRoutes
+);
 
 // Home
 app.get("/", (req, res) => {

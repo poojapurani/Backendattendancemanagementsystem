@@ -25,14 +25,18 @@ exports.getUserDashboard = async (req, res) => {
   }
 };
 
+function getISTDate() {
+  return new Date().toLocaleString("en-CA", {
+    timeZone: "Asia/Kolkata"
+  }).split(",")[0];   // returns YYYY-MM-DD
+}
 
 
 
 // ✅ Admin Overview Dashboard
 exports.getAdminOverview = async (req, res) => {
   try {
-    const today = new Date().toISOString().split("T")[0];
-
+    const today = getISTDate()
     // Total employees except admin
     const totalEmployees = await User.count({
       where: { role: { [Op.ne]: "Admin" } }
@@ -76,13 +80,18 @@ function formatDate(d) {
   const dd = String(d.getDate()).padStart(2, "0");
   return `${yyyy}-${mm}-${dd}`;
 }
+function getISTDateObject() {
+  return new Date(
+    new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" })
+  );
+}
 
 
 // ✅ Admin Report: daily, weekly, monthly
 exports.getAdminReport = async (req, res) => {
   try {
     const { periodType } = req.query;
-    const today = new Date();
+    const today = getISTDateObject();
 
     let startDate;
     let endDate = today;

@@ -75,9 +75,20 @@ const Attendance = sequelize.define(
     office_hours: {
       type: DataTypes.STRING,
       allowNull: true
-    }
+    },
+    missed_punchout: { 
+      type: DataTypes.BOOLEAN, 
+      defaultValue: false 
+    },
+    missed_reason: { 
+      type: DataTypes.STRING 
+    },
+    missed_time: { 
+      type: DataTypes.STRING 
+    },
 
   },
+  
   {
     timestamps: true, // createdAt and updatedAt
     tableName: "attendance",

@@ -5,6 +5,7 @@ const dashboardController = require("../controllers/dashboardController"); // âœ
 //const { verifyToken, verifyAdmin } = require("../middlewares/authMiddleware");
 const { verifyToken, verifyAdmin, verifyUser } = require("../middlewares/authMiddleware");
 
+
 // User routes
 router.post("/punchin", verifyToken, verifyUser, attendanceController.punchIn);
 router.put("/punchout", verifyToken, verifyUser, attendanceController.punchOut);
@@ -45,4 +46,6 @@ router.put("/admin/:emp_id/:date", verifyToken,verifyAdmin,attendanceController.
 
 router.post("/admin/add-attendance", verifyToken, verifyAdmin, attendanceController.adminAddAttendance);
 
+router.get("/getLog", verifyToken, verifyAdmin, attendanceController.adminGetLog);
+router.post("/missed-punchout", verifyToken, attendanceController.addMissedPunchoutRemark);
 module.exports = router;
