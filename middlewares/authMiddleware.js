@@ -67,29 +67,32 @@ exports.verifyUser = (req, res, next) => {
 };
 
 
-exports.requireMissedPunchoutRemark= async (req, res, next) => {
+exports.requireMissedPunchoutRemark = async (req, res, next) => {
   try {
+    // Allow missed-punchout API to bypass validation
+    if (req.path === "/missed-punchout") {
+      return next();
+    }
+
     const emp_id = req.user.emp_id;
 
-    const pending = await Attendance.findOne({
-      where: {
-        emp_id,
-        missed_punchout: true,
-      },
+    const missed = await Attendance.findOne({
+      where: { emp_id, missed_punchout: true }
     });
 
-    if (pending) {
+    if (missed) {
       return res.status(403).json({
+        isPunchOutPending: true,   // ⭐ NEW FIELD for frontend
         message: "You have a missed punch-out from previous day. Provide reason & time to continue.",
-        sr_no: pending.id,
-        date: pending.date
+        date: missed.date
       });
     }
 
     next();
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: "Server error", err });
+    res.status(500).json({ message: "Middleware error" });
   }
 };
+
 

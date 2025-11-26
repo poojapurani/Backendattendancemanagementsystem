@@ -10,7 +10,7 @@ const User = sequelize.define(
             primaryKey: true,
         },
         member_type: {
-            type: DataTypes.ENUM("EMP", "INT"),
+            type: DataTypes.ENUM("EMP", "INT","TEMP"),
             allowNull: false
         },
         team_name: {
@@ -59,12 +59,62 @@ const User = sequelize.define(
         previous_emp_ids: {
             type: DataTypes.STRING,
             allowNull: true,
-        }
+        },
 
+        birthdate: {
+            type: DataTypes.DATEONLY,
+            allowNull: true,
+        },
+        // Structured Address
+        address_line1: {
+            type: DataTypes.STRING,
+            allowNull: false,
+        },
+        address_line2: {
+            type: DataTypes.STRING,
+            allowNull: true,
+        },
+        city: {
+            type: DataTypes.STRING,
+            allowNull: false,
+            defaultValue: "Vadodara",
+        },
+        state: {
+            type: DataTypes.STRING,
+            allowNull: false,
+            defaultValue: "Gujarat",
+        },
+        country: {
+            type: DataTypes.STRING,
+            allowNull: false,
+            defaultValue: "India",
+        },
+        pin_code: {
+            type: DataTypes.STRING,
+            allowNull: false,
+        },
+        primary_contact: {
+            type: DataTypes.STRING,
+            allowNull: true,
+        },
+        contacts: {
+            type: DataTypes.JSON, 
+            allowNull: true,
+        },
+        slot: {
+            type: DataTypes.JSON,
+            allowNull: false
+        },
+        profile_pic: {
+            type: DataTypes.STRING,
+            allowNull: true,
+            defaultValue: null
+        }
 
     },
     {
         timestamps: true,
+        //underscored: true,
         tableName: "users",
     }
 );

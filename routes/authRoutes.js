@@ -15,7 +15,6 @@ router.post("/login", authController.login);
 
 router.post("/convert-intern/:emp_id",verifyToken, verifyAdmin, authController.convertInternToEmployee);
 
-
 //admin
 
 // Description: Fetches all registered users (id, emp_id, name, user_id, role)

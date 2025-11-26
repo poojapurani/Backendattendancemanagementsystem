@@ -3,8 +3,13 @@ const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 const Attendance = require("../models/Attendance");
 require("dotenv").config();
-const { Op, fn, col, where } = require("sequelize");
+const { Sequelize, Op, fn, col, where } = require("sequelize");
 const Todo = require("../models/Todo");
+const IdentityCard = require("../models/IdentityCard");
+const WorkSession = require("../models/WorkSession");
+const timeSlots = require("../utils/timeSlots");
+
+
 
 
 
@@ -46,27 +51,73 @@ exports.initialAdminRegister = async (req, res) => {
 /*----------------------------------------------------
     ADMIN REGISTERS EMPLOYEE
 ----------------------------------------------------*/
+
+function incrementSerial(serial) {
+  const chars = [
+    ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+    ...'abcdefghijklmnopqrstuvwxyz',
+    ...'123456789'
+  ];
+  const base = chars.length;
+
+  let num = 0;
+  for (let i = 0; i < serial.length; i++) {
+    num = num * base + chars.indexOf(serial[i]);
+  }
+
+  num++;
+
+  let newSerial = "";
+  for (let i = 0; i < 4; i++) {
+    newSerial = chars[num % base] + newSerial;
+    num = Math.floor(num / base);
+  }
+
+  return newSerial;
+}
+
 exports.register = async (req, res) => {
   try {
-    const { name, user_id, password, department, member_type, team_name } = req.body;
+    const {
 
-    // Validate required fields
-    if (!name || !user_id || !password || !member_type || !team_name) {
-      return res.status(400).json({ message: "Missing required fields" });
+      name,
+      user_id,
+      password,
+      role,
+      department,
+
+      member_type,
+      team_name,
+      status,
+
+      birthdate,
+      primary_contact,
+      contacts,
+
+      address_line1,
+      address_line2,
+      city,
+      state,
+      country,
+      pin_code,
+      profile_pic, slot_id
+    } = req.body;
+    //const {slot_id} = req.body;
+    
+
+    if (!name || !user_id || !password || !member_type || !team_name || !address_line1 || !pin_code) {
+      return res.status(400).json({ message: "Required fields missing!" });
     }
 
-    // Password validation: exactly 8 chars, uppercase, lowercase, number, special (@ or _)
     const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@_])[A-Za-z\d@_]{8}$/;
-
     if (!passwordRegex.test(password)) {
       return res.status(400).json({
-        message:
-          "Password must be EXACTLY 8 characters and include uppercase, lowercase, number, and special (@ or _ only)"
+        message: "Password must be EXACTLY 8 characters with proper rules"
       });
     }
 
-    const joining_date = req.body.joining_date 
-      ? req.body.joining_date 
+    const joining_date = req.body.joining_date
+      ? req.body.joining_date
       : new Date().toISOString().split("T")[0];
 
     const teamCodes = {
@@ -74,22 +125,31 @@ exports.register = async (req, res) => {
       metamatrix: "02",
       aibams: "03",
     };
-
-    const year = joining_date.split("-")[0].slice(2);
+    const normalizedTeam = team_name.toLowerCase();
+    const year = joining_date.split("-")[0];
 
     const lastUser = await User.findOne({
-      where: { member_type, team_name },
+      where: {
+        member_type,
+        team_name: normalizedTeam,
+
+        emp_id: { 
+          [Op.like]: `${member_type}${teamCodes[normalizedTeam]}${year}%` 
+        }
+
+
+      },
       order: [["id", "DESC"]],
     });
 
-    let serial = 1;
+
+    let serial = "AAAA";
     if (lastUser && lastUser.emp_id) {
-      const lastSerial = lastUser.emp_id.slice(-3);
-      serial = parseInt(lastSerial) + 1;
+      const lastSerial = lastUser.emp_id.slice(-4);
+      serial = incrementSerial(lastSerial);
     }
 
-    const serialStr = String(serial).padStart(3, "0");
-    const emp_id = `${member_type}${teamCodes[team_name.toLowerCase()]}${year}${serialStr}`;
+    const emp_id = `${member_type}${teamCodes[normalizedTeam]}${year}${serial}`;
 
     const existing = await User.findOne({ where: { user_id } });
     if (existing) {
@@ -98,17 +158,87 @@ exports.register = async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password.trim(), 12);
 
+    // -----------------------------------------------------
+    // ⭐ ADD WORK SESSION DURING REGISTRATION
+    // -----------------------------------------------------
+
+    const slot = timeSlots[slot_id];
+    if (!slot) {
+      return res.status(400).json({ message: "Invalid slot_id" });
+    }
+
+
+
+
+    // Create User
     const newUser = await User.create({
       emp_id,
       name,
       user_id,
       password: hashedPassword,
-      role: "User",
+      role: role || "User",
       department,
+      joining_date: joining_date || new Date(),
+      status: status || "active",
+
+      birthdate,
+      primary_contact,
+      contacts,
+      slot: slot,
       member_type,
       team_name,
-      joining_date,
+      address_line1,
+      address_line2: address_line2 || null,
+      city: city || "Vadodara",
+      state: state || "Gujarat",
+      country: country || "India",
+      pin_code,
+      profile_pic: profile_pic || null
     });
+
+
+    // Display user JSON
+    const displayUser = {
+      name: newUser.name,
+      user_id: newUser.user_id,
+      department: newUser.department,
+      member_type: newUser.member_type,
+      team_name: newUser.team_name,
+      role: newUser.role,
+      joining_date: newUser.joining_date,
+      status: newUser.status,
+      birthdate: newUser.birthdate,
+      address: newUser.address,
+      primary_contact: newUser.primary_contact,
+      contacts: newUser.contacts,
+      slot: newUser.slot
+    };
+
+    // Create Identity Card
+
+    const identity = await IdentityCard.create({
+      user_id: newUser.id,
+      emp_id: newUser.emp_id,
+      display_user: {
+           name: newUser.name,
+          user_id: newUser.user_id,
+          department: newUser.department,
+          member_type: newUser.member_type,
+          team_name: newUser.team_name,
+          joining_date: newUser.joining_date,
+          previous_emp_ids: "" 
+      }
+    });
+
+    await WorkSession.create({
+      emp_id,
+      name: newUser.name,
+      start_time: slot.start_time,
+      end_time: slot.end_time
+    });
+
+
+    // -----------------------------------------------------
 
     res.status(201).json({
       message: "User registered successfully",
@@ -122,9 +252,13 @@ exports.register = async (req, res) => {
   }
 };
 
+
+
+
 /*----------------------------------------------------
     LOGIN (ADMIN & EMPLOYEE)
 ----------------------------------------------------*/
+
 exports.login = async (req, res) => {
   try {
     let { emp_id, password } = req.body;
@@ -133,54 +267,114 @@ exports.login = async (req, res) => {
       return res.status(400).json({ message: "Please provide emp_id and password" });
     }
 
-    const user = await User.findOne({ where: { emp_id: emp_id.trim() } });
+    emp_id = emp_id.trim();
 
-    // const fetchIds = [
-    //   user.emp_id,
-    //   ...(user.previous_emp_ids || [])
-    // ];
+    // 1️⃣ CHECK IF ADMIN LOGIN
+    let user = await User.findOne({ where: { emp_id } });
 
-    //  emp_id incorrect
-    if (!user) {
-      return res.status(400).json({ message: "Invalid emp_id" });
-    }
-    
-    
-    if (user.status === "deactivated") {
-      return res.status(403).json({
-        message: "Your account is deactivated."
+    if (user && user.role === "Admin") {
+      // ADMIN --> validate directly from USER table
+
+      const isMatch = await bcrypt.compare(password.trim(), user.password);
+
+      if (!isMatch) {
+        return res.status(400).json({ message: "Incorrect password" });
+      }
+
+        // req.session.user = {
+        //   id: user.id,
+        //   emp_id: user.emp_id,
+        //   name: user.name,
+        //   user_id: user.user_id,
+        //   role: user.role,
+        //   department: user.department,
+        // };
+
+      // Issue JWT for admin
+      const token = jwt.sign(
+        {
+          id: user.id,
+          emp_id: user.emp_id,
+          name: user.name,
+          user_id: user.user_id,
+          role: user.role,
+          department: user.department,
+          joining_date: user.joining_date,
+        },
+        process.env.JWT_SECRET,
+        { expiresIn: "1h" }
+      );
+
+      return res.status(200).json({
+        message: "Admin login successful",
+        token,
+        user,
       });
     }
 
+    // 2️⃣ NORMAL USER LOGIN - Fetch emp_id from IdentityCard
+    const identity = await IdentityCard.findOne({ where: { emp_id } });
 
+    if (!identity) {
+      return res.status(400).json({ message: "Invalid emp_id" });
+    }
+
+    let permissions = [];
+    if (identity.permission_id) {
+      const preset = await PermissionPreset.findByPk(identity.permission_id);
+      if (preset && preset.permission_ids) {
+        permissions = preset.permission_ids; // JSON array
+      }
+    }
+    // Now fetch user using identity.user_id (FK)
+    user = await User.findOne({ where: { id: identity.user_id } });
+
+    if (!user) {
+      return res.status(400).json({ message: "User not found for this Identity Card" });
+    }
+
+    if (user.status === "deactivated") {
+      return res.status(403).json({ message: "Your account is deactivated." });
+    }
+
+    // Compare password from User table
     const isMatch = await bcrypt.compare(password.trim(), user.password);
 
-    //  password incorrect
     if (!isMatch) {
       return res.status(400).json({ message: "Incorrect password" });
     }
 
     if (!user.role || user.role.trim() === "") {
-      user.role = "User";  
+      user.role = "User";
     }
 
+
+    // req.session.user = {
+    //   id: user.id,
+    //   emp_id: identity.emp_id,
+    //   name: user.name,
+    //   user_id: user.user_id,
+    //   role: user.role,
+    //   department: user.department,
+    //  // permissions: permissions,
+    // };
     // Generate JWT
     const token = jwt.sign(
       {
         id: user.id,
-        emp_id: user.emp_id,
+        emp_id: identity.emp_id,   // emp_id from identity card
         name: user.name,
         user_id: user.user_id,
         role: user.role,
         department: user.department,
         joining_date: user.joining_date,
-        // status: user.status,
+       //permissions: permissions,
       },
       process.env.JWT_SECRET,
       { expiresIn: "1h" }
     );
 
-    res.status(200).json({
+    return res.status(200).json({
       message: "Login successful",
       token,
       user,
@@ -191,6 +385,7 @@ exports.login = async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 };
+
 
 // 📌 Get Today's Attendance Status for a User
 // exports.getTodayAttendanceStatus = async (req, res) => {
@@ -243,17 +438,27 @@ exports.login = async (req, res) => {
 exports.getAllUsers = async (req, res) => {
   try {
     const users = await User.findAll({
-      where: where(
-        fn("LOWER", col("role")),
-        { [Op.ne]: "admin" }   // case-insensitive check
-      )
+      where: {
+        role: { [Op.ne]: "admin" }
+      },
+      include: [
+        {
+          model: IdentityCard,
+          as: 'identityCard',   // ✅ must match your association alias
+          attributes: ['emp_id']
+        }
+      ],
     });
 
     res.status(200).json(users);
   } catch (err) {
-    res.status(500).json({ message: "Error fetching users", error: err.message });
+    res.status(500).json({
+      message: "Error fetching users",
+      error: err.message
+    });
   }
 };
+
 
 
 /*---------------------------------------------------------
@@ -267,17 +472,41 @@ exports.convertInternToEmployee = async (req, res) => {
   try {
     const empId = req.params.emp_id;
 
-    // 1) Check intern exists
-    const oldUser = await User.findOne({ where: { emp_id: empId } });
+    // 1️⃣ Fetch identity card by emp_id
+    const identity = await IdentityCard.findOne({
+      where: { emp_id: empId },
+      include: [{
+        model: User,
+        as: "user"   // ⭐ MUST MATCH ASSOCIATION ALIAS
+      }]
+    });
 
-    if (!oldUser)
+    if (!identity) {
       return res.status(404).json({ message: "Intern not found" });
+    }
 
-    if (oldUser.member_type !== "INT")
+    const oldUser = identity.user;
+
+    // 2️⃣ Check member_type
+    if (oldUser.member_type !== "INT") {
       return res.status(400).json({ message: "This user is not an intern" });
+    }
 
-    // Call your conversion function
-    await convertUser(oldUser, req, res);
+    // 3️⃣ Convert to Employee (existing convertUser logic)
+    await convertUser(oldUser, "EMP", req, res);
+
+    // 4️⃣ Fetch the newly created employee
+    const newUser = await User.findOne({
+      where: { user_id: oldUser.user_id, member_type: "EMP" },
+      order: [["id", "DESC"]]
+    });
+
+    if (!newUser) {
+      return res.status(500).json({ message: "Employee conversion failed" });
+    }
+
+    // 5️⃣ Update additional fields (including member_type or team_name change)
+    await normalUpdateUser(newUser, req, res);
 
   } catch (err) {
     console.error("Error in conversion:", err);
@@ -285,15 +514,31 @@ exports.convertInternToEmployee = async (req, res) => {
   }
 };
 
+
 // ==========================================
 // 🔧 Helper Function (your logic here)
 // ==========================================
-async function convertUser(oldUser, req, res) {
+async function convertUser(oldUser, newType, req, res) {
   try {
     const body = req.body || {};
     const { name, user_id, department, team_name, joining_date, password } = body;
 
+    // -----------------------------
+    // fetch identity card of old user
+    // -----------------------------
+    const oldIdentity = await IdentityCard.findOne({
+      where: { userId: oldUser.id }
+    });
 
+    if (!oldIdentity) {
+      return res.status(400).json({ message: "Identity card missing for user" });
+    }
+
+    const oldEmpId = oldIdentity.emp_id; // fetched from identity card
+
+    // -----------------------------
+    // TEAM CODES
+    // -----------------------------
     const teamCodes = {
       shdpixel: "01",
       metamatrix: "02",
@@ -302,72 +547,112 @@ async function convertUser(oldUser, req, res) {
 
     const finalTeamName = (team_name || oldUser.team_name).toLowerCase();
     const teamCode = teamCodes[finalTeamName];
-    if (!teamCode) return res.status(400).json({ message: "Invalid team_name" });
+    if (!teamCode)
+      return res.status(400).json({ message: "Invalid team_name" });
 
-    // Extract year from existing intern ID
-    const yearDigits = oldUser.emp_id.slice(5, 7);
+    // -----------------------------
+    // YEAR from joining date
+    // -----------------------------
+    const finalJoiningDate =
+      joining_date || oldUser.joining_date || new Date().toISOString().split("T")[0];
 
-    // Find last created employee in same team+year
-    const lastUser = await User.findOne({
-      where: { emp_id: { [Op.like]: `EMP${teamCode}${yearDigits}%` } },
-      order: [["emp_id", "DESC"]],
+    const fullYear = finalJoiningDate.split("-")[0];
+
+    // -----------------------------
+    // FIND LAST IDENTITY CARD
+    // -----------------------------
+    const lastIdentity = await IdentityCard.findOne({
+      where: {
+        emp_id: { [Op.like]: `${newType}${teamCode}${fullYear}%` }
+      },
+      order: [["id", "DESC"]],
     });
 
-    let newSerial = "001";
-    if (lastUser) {
-      newSerial = String(parseInt(lastUser.emp_id.slice(-3)) + 1).padStart(3, "0");
+    let serial = "AAAA";
+    if (lastIdentity) {
+      const lastSerial = lastIdentity.emp_id.slice(-4);
+      serial = incrementSerial(lastSerial);
     }
 
-    const newEmpId = `EMP${teamCode}${yearDigits}${newSerial}`;
+    const newEmpId = `${newType}${teamCode}${fullYear}${serial}`;
 
-    // Build previous_emp_ids
-    const prevIds = oldUser.previous_emp_ids
-      ? oldUser.previous_emp_ids.split(",")
-      : [];
-
-    if (!prevIds.includes(oldUser.emp_id)) prevIds.push(oldUser.emp_id);
-
-    // Hash password if changed
-    let hashed = oldUser.password;
+    // -----------------------------
+    // PASSWORD HASHING
+    // -----------------------------
+    let hashedPassword = oldUser.password;
     if (password && password.trim() !== "") {
-      hashed = await bcrypt.hash(password.trim(), 12);
+      hashedPassword = await bcrypt.hash(password.trim(), 12);
     }
+    const oldDisplay = typeof oldIdentity.display_user === "string"
+      ? JSON.parse(oldIdentity.display_user)
+      : oldIdentity.display_user || {};
 
-    // Create new employee entry
+    const oldPrevIds = oldDisplay.previous_emp_ids || [];
+    const prevIdsArray = Array.isArray(oldPrevIds)
+      ? [...oldPrevIds]
+      : oldPrevIds.toString().split(",").filter(Boolean);
+
+    prevIdsArray.push(oldEmpId);
+    // -----------------------------
+    // CREATE NEW USER
+    // -----------------------------
     const newUser = await User.create({
-      emp_id: newEmpId,
       name: name || oldUser.name,
       user_id: user_id || oldUser.user_id,
-      password: hashed,
+      password: hashedPassword,
       role: "User",
       department: department || oldUser.department,
-      member_type: "EMP",
+      member_type: newType,
       team_name: finalTeamName,
-      joining_date: joining_date || oldUser.joining_date,
-      previous_emp_ids: prevIds.join(","),
+      joining_date: finalJoiningDate,
+      status: "active",
+      emp_id: newEmpId,
+      address_line1: oldUser.address_line1,    // inherit from old user
+      pin_code: oldUser.pin_code,              // inherit from old user
+      slot: oldUser.slot,
+      previous_emp_ids: oldUser.previous_emp_ids
+    ? oldUser.previous_emp_ids + "," + oldEmpId
+    : oldEmpId
     });
 
-    // ------------------------------------------
-    // 🔥 DATA MIGRATION (TODO + ATTENDANCE)
-    // ------------------------------------------
+    // -----------------------------
+    // CREATE NEW IDENTITY CARD
+    // -----------------------------
+    await IdentityCard.create({
+      emp_id: newEmpId,
+      user_id: newUser.id,
+      display_user: {
+        name: newUser.name,
+        user_id: newUser.user_id,
+        department: newUser.department,
+        member_type: newUser.member_type,
+        team_name: newUser.team_name,
+        joining_date: newUser.joining_date,
+        previous_emp_ids: prevIdsArray, 
+      }
+    });
 
-    // 1) Move Todos
+    // -----------------------------
+    // MIGRATE TODO
+    // -----------------------------
     await Todo.update(
       { emp_id: newEmpId },
-      { where: { emp_id: oldUser.emp_id } }
+      { where: { emp_id: oldEmpId } }
     );
 
-    // 2) Move Attendance (safe insert)
+    // -----------------------------
+    // MIGRATE ATTENDANCE
+    // -----------------------------
     const oldAttendance = await Attendance.findAll({
-      where: { emp_id: oldUser.emp_id }
+      where: { emp_id: oldEmpId }
     });
 
     for (const rec of oldAttendance) {
-      const alreadyExists = await Attendance.findOne({
+      const exists = await Attendance.findOne({
         where: { emp_id: newEmpId, date: rec.date }
       });
 
-      if (!alreadyExists) {
+      if (!exists) {
         await Attendance.create({
           emp_id: newEmpId,
           date: rec.date,
@@ -388,23 +673,26 @@ async function convertUser(oldUser, req, res) {
       }
     }
 
-    // Deactivate intern user
+    // -----------------------------
+    // DEACTIVATE OLD USER
+    // -----------------------------
     await oldUser.update({ status: "deactivated" });
 
     return res.status(200).json({
-      message: "Intern successfully converted to Employee",
+      message: `Converted to ${newType}`,
       new_emp_id: newEmpId,
-      old_emp_id: oldUser.emp_id,
-      user: newUser,
+      old_emp_id: oldEmpId,
+      new_user_id: newUser.id
     });
 
   } catch (err) {
     console.error("Conversion Error:", err);
-    res.status(500).json({ message: "Failed to convert intern", error: err.message });
+    return res.status(500).json({
+      message: "Conversion failed",
+      error: err.message,
+    });
   }
 }
-
-
 
 
 /*---------------------------------------------------------
@@ -412,7 +700,19 @@ async function convertUser(oldUser, req, res) {
 ---------------------------------------------------------*/
 async function normalUpdateUser(user, req, res) {
   try {
-    const { name, user_id, role, department, member_type, team_name, joining_date, password } = req.body;
+    const {
+      name, user_id, role, department, member_type,
+      team_name, joining_date, password, slot_id, birthdate,
+      primary_contact,
+      contacts,
+      address_line1,
+      address_line2,
+      city,
+      state,
+      country,
+      pin_code,
+      profile_pic
+    } = req.body;
 
     const updatePayload = {
       name: name || user.name,
@@ -422,8 +722,28 @@ async function normalUpdateUser(user, req, res) {
       member_type: member_type || user.member_type,
       team_name: team_name || user.team_name,
       joining_date: joining_date || user.joining_date,
+      birthdate: birthdate || user.birthdate,
+      primary_contact: primary_contact || user.primary_contact,
+      contacts: contacts || user.contacts,
+      address_line1: address_line1 || user.address_line1,
+      address_line2: address_line2 || user.address_line2,
+      city: city || user.city,
+      state: state || user.state,
+      country: country || user.country,
+      pin_code: pin_code || user.pin_code,
+      profile_pic: profile_pic || user.profile_pic
     };
 
+    // ⭐ If slot_id is given, update slot
+    if (slot_id) {
+      const slot = timeSlots[slot_id];
+      if (!slot) {
+        return res.status(400).json({ message: "Invalid slot_id" });
+      }
+      updatePayload.slot = slot;   // stores JSON {start_time, end_time}
+    }
+
+    // 🔑 Update password
     if (password && password.trim() !== "") {
       updatePayload.password = await bcrypt.hash(password.trim(), 12);
     }
@@ -440,31 +760,37 @@ async function normalUpdateUser(user, req, res) {
     res.status(500).json({ message: "Error", error: err.message });
   }
 }
+
 /*----------------------------------------------------
     UPDATE USER (ADMIN)
 ----------------------------------------------------*/
 exports.updateUserByEmpId = async (req, res) => {
   try {
     const { empId } = req.params;
-    const { name, user_id, role, department, member_type, team_name, joining_date, password } = req.body;
+    const { name, user_id, role, department, member_type, team_name, joining_date, password, slot_id } = req.body;
 
-    // 1) Fetch OLD USER
-    const oldUser = await User.findOne({ where: { emp_id: empId } });
+    // 1️⃣ Find IdentityCard by emp_id
+    const identity = await IdentityCard.findOne({
+      where: { emp_id: empId }
+    });
+
+    if (!identity) {
+      return res.status(404).json({ message: "Identity Card not found for this EMP ID" });
+    }
+
+    // 2️⃣ Get user_id from IdentityCard
+    const userId = identity.user_id;
+
+    // 3️⃣ Find User using user_id
+    const oldUser = await User.findOne({
+      where: { id: userId }
+    });
 
     if (!oldUser) {
       return res.status(404).json({ message: "User not found" });
     }
 
-    const oldEmpId = oldUser.emp_id;
-    const oldMemberType = oldUser.member_type.toUpperCase();
-    const newMemberType = (member_type || oldMemberType).toUpperCase();
-
-    // ❗ Only create NEW user when INT → EMP
-    if (oldMemberType === "INT" && newMemberType === "EMP") {
-      return await createNewEmployeeFromIntern(oldUser, req, res);
-    }
-
-    // If no INT → EMP, perform normal update
+    // 4️⃣ NORMAL USER UPDATE (Use your existing update logic)
     return await normalUpdateUser(oldUser, req, res);
 
   } catch (err) {
@@ -472,6 +798,8 @@ exports.updateUserByEmpId = async (req, res) => {
     res.status(500).json({ message: "Error updating user", error: err.message });
   }
 };
+
+
 
 /*----------------------------------------------------
     DELETE USER + ATTENDANCE (ADMIN)

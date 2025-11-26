@@ -12,7 +12,7 @@ dotenv.config();
 const app = express();
 
 const corsOptions = {
-  origin: "https://51978c00-27d3-48a8-9555-1bf28f87d2de-00-3huqj24jmr212.sisko.replit.dev",
+  origin: "https://846117fc-0cb5-4d95-89fc-4cc4eb6a0066-00-hvphbuu8tho8.pike.replit.dev",
   methods: "GET,HEAD,PUT,PATCH,POST,DELETE",
   credentials: true,
 };
@@ -64,6 +64,11 @@ require("./models/User");
 require("./models/Attendance");
 require("./models/Setting");
 require("./models/Todo");
+require("./models/WorkSession");
+require("./routes/permissionRoutes");
+require("./routes/permissionPresetRoutes");
+
+
 
 // 📌 Load and apply associations
 const applyAssociations = require("./models/association");
@@ -86,6 +91,10 @@ const attendanceRoutes = require("./routes/attendanceRoutes");
 const dashboardRoutes = require("./routes/dashboardRoutes");
 const todoRoutes = require("./routes/todoRoutes");
 const settingsRoutes = require("./routes/settingsRoutes");
+const workSessionRoutes = require("./routes/workSessionRoutes");
+const permissionRoutes = require("./routes/permissionRoutes");
+const permissionPresetRoutes = require("./routes/permissionPresetRoutes");
+
 
 app.use("/api/settings", settingsRoutes);
 
@@ -106,6 +115,11 @@ app.use(
   authMiddleware.requireMissedPunchoutRemark,
   dashboardRoutes
 );
+app.use("/api/work-sessions", workSessionRoutes);
+
+app.use("/api/permissions", permissionRoutes);
+app.use("/api/presets", permissionPresetRoutes);
+
 
 // Home
 app.get("/", (req, res) => {

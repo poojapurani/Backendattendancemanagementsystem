@@ -1,6 +1,7 @@
 const Todo = require("../models/Todo");
 const User = require("../models/User");
 const Attendance = require("../models/Attendance");
+const IdentityCard = require("../models/IdentityCard");
 
 
 // Check if user punched in today
@@ -37,7 +38,13 @@ async function getNextSrNo(emp_id) {
 
 exports.addTodo = async (req, res) => {
   try {
-    const emp_id = req.user.emp_id;
+    const userId = req.user.id; // from JWT
+
+    // Use correct column name 'user_id'
+    const identity = await IdentityCard.findOne({ where: { user_id: userId } });
+    if (!identity) return res.status(404).json({ message: "Identity card not found" });
+    const emp_id = identity.emp_id;
+
     const { title, description, priority, date } = req.body;
 
     if (!(await isUserPunchedIn(emp_id))) {
@@ -80,7 +87,6 @@ exports.addTodo = async (req, res) => {
       remark: null
     });
 
-    // Remove key_learning from response
     const clean = todo.toJSON();
     delete clean.key_learning;
 
@@ -93,16 +99,26 @@ exports.addTodo = async (req, res) => {
 };
 
 
+
 exports.getTodos = async (req, res) => {
   try {
-    const emp_id = req.user.emp_id;
+    const userId = req.user.id; // from JWT
+
+    // Get emp_id from IdentityCard
+    const identity = await IdentityCard.findOne({ where: { user_id: userId } });
+    if (!identity) return res.status(404).json({ message: "Identity card not found" });
+    const emp_id = identity.emp_id;
 
     const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-    const user = await User.findOne({ where: { emp_id } });
+
+    // FIXED: Query by correct DB column 'id'
+    const user = await User.findOne({ where: { id: userId } });
+    if (!user) return res.status(404).json({ message: "User not found" });
+
     const fetchIds = [user.emp_id, ...(user.previous_emp_ids || [])];
 
     const todos = await Todo.findAll({
-      where: {emp_id: fetchIds },
+      where: { emp_id: fetchIds },
       order: [["sr_no", "ASC"]],
       attributes: { exclude: ["key_learning"] }
     });
@@ -126,7 +142,11 @@ exports.getTodos = async (req, res) => {
 
 exports.updateTodo = async (req, res) => {
   try {
-    const emp_id = req.user.emp_id;
+    const userId = req.user.id; // from JWT
+    const identity = await IdentityCard.findOne({ where: { user_id: userId } });
+    if (!identity) return res.status(404).json({ message: "Identity card not found" });
+    const emp_id = identity.emp_id;
+
     const { sr_no } = req.params;
     const { title, description, priority, date, assigned_by, remark } = req.body;
 
@@ -192,7 +212,11 @@ function getISTTimeString() {
 
 exports.toggleTodoStatus = async (req, res) => {
   try {
-    const emp_id = req.user.emp_id;
+    const userId = req.user.id; // from JWT
+    const identity = await IdentityCard.findOne({ where: { user_id: userId } });
+    if (!identity) return res.status(404).json({ message: "Identity card not found" });
+    const emp_id = identity.emp_id;
+
     const { sr_no } = req.params;
     const { action } = req.body;
 
@@ -417,7 +441,11 @@ exports.toggleTodoStatus = async (req, res) => {
 
 exports.addRemark = async (req, res) => {
   try {
-    const emp_id = req.user.emp_id;
+    const userId = req.user.id; // from JWT
+    const identity = await IdentityCard.findOne({ where: { user_id: userId } });
+    if (!identity) return res.status(404).json({ message: "Identity card not found" });
+    const emp_id = identity.emp_id;
+
     const { sr_no } = req.params;
     const { remark } = req.body;
 
@@ -461,7 +489,11 @@ exports.addRemark = async (req, res) => {
 
 exports.deleteTodo = async (req, res) => {
   try {
-    const emp_id = req.user.emp_id;
+    const userId = req.user.id; // from JWT
+    const identity = await IdentityCard.findOne({ where: { userId } });
+    if (!identity) return res.status(404).json({ message: "Identity card not found" });
+    const emp_id = identity.emp_id;
+
     const { sr_no } = req.params;
 
     if (!(await isUserPunchedIn(emp_id))) {
