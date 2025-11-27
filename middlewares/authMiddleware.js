@@ -27,7 +27,8 @@ exports.verifyToken = (req, res, next) => {
       emp_id: decoded.emp_id,
       role: decoded.role,
       user_id: decoded.user_id,
-      name: decoded.name
+      name: decoded.name,
+      permissions: decoded.permissions || []
     };
 
     next();

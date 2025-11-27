@@ -42,6 +42,62 @@ function formatLateMinutes(totalMinutes) {
   }
 }
 
+function parseTime(timeStr, dateStr) {
+  if (!timeStr) return null;
+  return new Date(`${dateStr}T${timeStr}`);
+}
+
+function diffInSeconds(start, end) {
+  if (!start || !end) return 0;
+  const diff = (end - start) / 1000;
+  return diff > 0 ? diff : 0;
+}
+
+function formatHHMMSS(totalSeconds) {
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = Math.floor(totalSeconds % 60);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+function calculateAttendanceDurations(record) {
+  if (!record || !record.date) return {};
+
+  const dateStr = record.date;
+
+  const timeIn = parseTime(record.time_in, dateStr);
+  const timeOut = parseTime(record.time_out, dateStr);
+  const workStart = parseTime(record.work_start, dateStr);
+  const workEnd = parseTime(record.work_end, dateStr);
+  const breakStart = parseTime(record.break_start, dateStr);
+  const breakEnd = parseTime(record.break_end, dateStr);
+  const lunchStart = parseTime(record.lunch_start, dateStr);
+  const lunchEnd = parseTime(record.lunch_end, dateStr);
+
+  // 1️⃣ Working hours: time_in → time_out
+  const workingSeconds = diffInSeconds(workStart, workEnd);
+
+  // 2️⃣ Break + lunch durations
+  const breakSeconds = diffInSeconds(breakStart, breakEnd);
+  const lunchSeconds = diffInSeconds(lunchStart, lunchEnd);
+
+  // 3️⃣ Office hours = working hours minus break & lunch
+
+  const officeSeconds = diffInSeconds(timeIn, timeOut);
+  const workSeconds = workingSeconds - breakSeconds - lunchSeconds;
+
+  // 4️⃣ Work duration (from work_start → work_end)
+  
+
+  return {
+    working_hours: formatHHMMSS(workSeconds),
+    break_duration: formatHHMMSS(breakSeconds),
+    lunch_duration: formatHHMMSS(lunchSeconds),
+    office_hours: formatHHMMSS(officeSeconds),
+    work_duration: formatHHMMSS(workingSeconds)
+  };
+}
+
 // Get emp_id from IdentityCard safely
 
 async function getEmpId(user_id) {
@@ -185,17 +241,21 @@ exports.endWork = async (req, res) => {
       });
     }
 
-    const workDuration = calculateDuration(record.work_start, nowIST);
+    //const workDuration = calculateDuration(record.work_start, nowIST);
 
     record.work_end = nowIST;
-    record.work_duration = workDuration;
+
+    const durations = calculateAttendanceDurations(record);
+
+    record.work_duration = durations.work_duration;
+    //record.work_duration = workDuration;
     await record.save();
 
     res.json({
       message: "Work ended",
       work_start: record.work_start,
       work_end: nowIST,
-      work_duration: workDuration
+      work_duration: record.work_duration,
     });
 
   } catch (error) {
@@ -276,12 +336,21 @@ exports.endBreak = async (req, res) => {
 
     await record.update({ break_end: now });
 
-    const duration = calculateDuration(record.break_start, now);
+    //const duration = calculateDuration(record.break_start, now);
+
+    record.break_end = now;
+
+    // ✅ Recalculate all durations
+    const durations = calculateAttendanceDurations(record);
+    record.break_duration = durations.break_duration;
+
+    await record.save();
+
 
     res.json({
       message: "Break ended",
       break_end: now,
-      break_duration: duration
+      break_duration: durations.break_duration,
     });
 
   } catch (err) {
@@ -343,12 +412,16 @@ exports.endLunch = async (req, res) => {
 
     await record.update({ lunch_end: now });
 
-    const duration = calculateDuration(record.lunch_start, now);
+    //const duration = calculateDuration(record.lunch_start, now);
+     const durations = calculateAttendanceDurations(record);
+
+     record.lunch_duration = durations.lunch_duration;
+     await record.save();
 
     res.json({
       message: "Lunch ended",
       lunch_end: now,
-      lunch_duration: duration
+      lunch_duration: durations.lunch_duration,
     });
 
   } catch (err) {
@@ -382,23 +455,26 @@ exports.getTodayAttendanceStatus = async (req, res) => {
       where: { emp_id: fetchIds, date: today }
     });
 
-    const lunch_duration = calculateDuration(
-      attendance?.lunch_start,
-      attendance?.lunch_end,
-      attendance?.date || today
-    );
+    // const lunch_duration = calculateDuration(
+    //   attendance?.lunch_start,
+    //   attendance?.lunch_end,
+    //   attendance?.date || today
+    // );
 
-    const break_duration = calculateDuration(
-      attendance?.break_start,
-      attendance?.break_end,
-      attendance?.date || today
-    );
+    // const break_duration = calculateDuration(
+    //   attendance?.break_start,
+    //   attendance?.break_end,
+    //   attendance?.date || today
+    // );
 
-    const work_duration = calculateDuration(
-      attendance?.work_start,
-      attendance?.work_end,
-      attendance?.date || today
-    );
+    // const work_duration = calculateDuration(
+    //   attendance?.work_start,
+    //   attendance?.work_end,
+    //   attendance?.date || today
+    // );
+
+    const durations = calculateAttendanceDurations(attendance || { date: today });
+
 
     const attendanceStatus = {
       punched_in: !!attendance?.time_in,
@@ -406,17 +482,17 @@ exports.getTodayAttendanceStatus = async (req, res) => {
       status: attendance?.status || "not set",
       time_in: attendance?.time_in || null,
       time_out: attendance?.time_out || null,
-      working_hours: attendance?.working_hours || "00:00:00",
+      working_hours: durations.working_hours || "00:00:00",
       lunch_start: attendance?.lunch_start || null,
       lunch_end: attendance?.lunch_end || null,
-      lunch_duration,
+      lunch_duration: durations.lunch_duration || "00:00:00",
       break_start: attendance?.break_start || null,
       break_end: attendance?.break_end || null,
-      break_duration,
+      break_duration: durations.break_duration || "00:00:00",
       work_start: attendance?.work_start || null,
       work_end: attendance?.work_end || null,
-      work_duration,
-      office_hours: attendance?.office_hours || "00:00:00",
+      work_duration: durations.work_duration || "00:00:00",
+      office_hours: durations.office_hours || "00:00:00",
       key_learning: attendance?.key_learning || ""
     };
 
@@ -544,16 +620,31 @@ exports.punchOut = async (req, res) => {
     }
 
     // Office hours calculation using IST
-    const office_hours = calculateDuration(record.time_in, nowIST);
+    //const office_hours = calculateDuration(record.time_in, nowIST);
 
     record.time_out = nowIST;
-    record.office_hours = office_hours;
+
+    const durations = calculateAttendanceDurations(record);
+
+    // ✅ Save updated durations
+    record.office_hours = durations.office_hours;
+    record.working_hours = durations.working_hours;
+    record.work_duration = durations.work_duration;
+    record.break_duration = durations.break_duration;
+    record.lunch_duration = durations.lunch_duration;
+
+    //await record.save();
+    //record.office_hours = office_hours;
     await record.save();
 
     res.json({
       message: "Punch-out successful",
       time_out: nowIST,
-      office_hours
+      office_hours: durations.office_hours,
+      working_hours: durations.working_hours,
+      work_duration: durations.work_duration,
+      break_duration: durations.break_duration,
+      lunch_duration: durations.lunch_duration
     });
 
   } catch (err) {
@@ -676,6 +767,7 @@ exports.getHistory = async (req, res) => {
         }
       }
 
+      let recordData = {};
       if (r) {
         status = r.status;
 
@@ -707,16 +799,16 @@ exports.getHistory = async (req, res) => {
         const [h, m, s] = working_hours.split(":").map(Number);
         totalSeconds += h * 3600 + m * 60 + s;
 
-        if (r.break_start && r.break_end)
-          break_duration = calculateDuration(r.break_start, r.break_end, r.date);
+        // if (r.break_start && r.break_end)
+        //   break_duration = calculateDuration(r.break_start, r.break_end, r.date);
 
-        if (r.lunch_start && r.lunch_end)
-          lunch_duration = calculateDuration(r.lunch_start, r.lunch_end, r.date);
+        // if (r.lunch_start && r.lunch_end)
+        //   lunch_duration = calculateDuration(r.lunch_start, r.lunch_end, r.date);
 
-        let work_duration = "00:00:00";
-        if (r.work_start && r.work_end)
-          work_duration = calculateDuration(r.work_start, r.work_end, r.date);
-
+        // let work_duration = "00:00:00";
+        // if (r.work_start && r.work_end)
+        //   work_duration = calculateDuration(r.work_start, r.work_end, r.date);
+        recordData = calculateAttendanceDurations(r);
 
       }
 
@@ -724,12 +816,15 @@ exports.getHistory = async (req, res) => {
         date: dateStr,
         time_in,
         time_out,
-        working_hours,
-        office_hours: r?.office_hours || "00:00:00",
+        
+        
         status,
         isPresent,
-        break_duration,
-        lunch_duration,
+        working_hours: recordData.working_hours || "00:00:00",
+        office_hours: recordData.office_hours || "00:00:00",
+        work_duration: recordData.work_duration || "00:00:00",
+        break_duration: recordData.break_duration || "00:00:00",
+        lunch_duration: recordData.lunch_duration || "00:00:00",
         work_start,
         work_end,
         lunch_start,
@@ -861,9 +956,6 @@ exports.getHistory = async (req, res) => {
   }
 };
 
-
-
-
 // Admin: Get all attendance
 exports.getAllAttendance = async (req, res) => {
   try {
@@ -886,7 +978,6 @@ exports.getAllAttendance = async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 };
-
 
 // Admin: Get specific user's attendance by date
 exports.getByUserAndDate = async (req, res) => {
@@ -914,10 +1005,12 @@ exports.getByUserAndDate = async (req, res) => {
 // Admin: Edit attendance
 exports.editAttendance = async (req, res) => {
   try {
-    const user_id = req.user.id;
+    // const user_id = req.user.id;
 
-    // Fetch emp_id from IdentityCard
-    const emp_id = await getEmpId(user_id);
+    // // Fetch emp_id from IdentityCard
+    // const emp_id = await getEmpId(user_id);
+
+    const emp_id = req.params.emp_id; 
     const { date } = req.params;
 
     const {
@@ -936,61 +1029,47 @@ exports.editAttendance = async (req, res) => {
     const record = await Attendance.findOne({ where: { emp_id, date } });
     if (!record) return res.status(404).json({ message: "Attendance record not found" });
 
-    const newTimeIn = time_in || record.time_in;
-    const newTimeOut = time_out || record.time_out;
+    // const newTimeIn = time_in || record.time_in;
+    // const newTimeOut = time_out || record.time_out;
 
     // -------------- WORKING HOURS LIKE punchOut --------------
-    let working_hours = "00:00:00";
+    // Update fields or keep existing
+    record.time_in = time_in || record.time_in;
+    record.time_out = time_out || record.time_out;
+    record.work_start = work_start || record.work_start;
+    record.work_end = work_end || record.work_end;
+    record.lunch_start = lunch_start || record.lunch_start;
+    record.lunch_end = lunch_end || record.lunch_end;
+    record.break_start = break_start || record.break_start;
+    record.break_end = break_end || record.break_end;
+    record.key_learning = key_learning || record.key_learning;
 
-    if (newTimeIn && newTimeOut) {
-      const timeIn = new Date(`${date}T${newTimeIn}`);
-      const timeOut = new Date(`${date}T${newTimeOut}`);
+    // Calculate durations using your central function
+    const durations = calculateAttendanceDurations(record);
 
-      let diffMs = timeOut - timeIn;
-
-      // subtract breaks
-      let totalBreakMs = 0;
-
-      if (record.lunch_start && record.lunch_end) {
-        const lunchStart = new Date(`${date}T${record.lunch_start}`);
-        const lunchEnd = new Date(`${date}T${record.lunch_end}`);
-        totalBreakMs += Math.max(0, lunchEnd - lunchStart);
-      }
-
-      if (record.break_start && record.break_end) {
-        const breakStart = new Date(`${date}T${record.break_start}`);
-        const breakEnd = new Date(`${date}T${record.break_end}`);
-        totalBreakMs += Math.max(0, breakEnd - breakStart);
-      }
-
-      diffMs -= totalBreakMs;
-
-      const hours = Math.floor(diffMs / 3600000);
-      const minutes = Math.floor((diffMs % 3600000) / 60000);
-      const seconds = Math.floor((diffMs % 60000) / 1000);
-
-      working_hours =
-        `${hours.toString().padStart(2, "0")}:` +
-        `${minutes.toString().padStart(2, "0")}:` +
-        `${seconds.toString().padStart(2, "0")}`;
-    }
+    record.working_hours = durations.working_hours;
+    record.work_duration = durations.work_duration;
+    record.office_hours = durations.office_hours;
+    record.break_duration = durations.break_duration;
+    record.lunch_duration = durations.lunch_duration;
 
     // -------------- STATUS LOGIC SAME AS BEFORE --------------
     let finalStatus = status || record.status;
 
-    if (!status) {
+        if (!status) {
       const reportingTime = new Date(`${date}T09:30:00`);
       const halfDayCut = new Date(`${date}T13:30:00`);
-      const punchInTime = new Date(`${date}T${newTimeIn}`);
+      const punchInTime = record.time_in ? new Date(`${date}T${record.time_in}`) : null;
 
-      if (!newTimeIn) finalStatus = "absent";
-      else if (punchInTime > reportingTime && punchInTime <= halfDayCut)
-        finalStatus = "Late";
-      else if (punchInTime > halfDayCut)
-        finalStatus = "half-day";
-      else
-        finalStatus = "present";
+      if (!punchInTime) record.status = "absent";
+      else if (punchInTime > reportingTime && punchInTime <= halfDayCut) record.status = "Late";
+      else if (punchInTime > halfDayCut) record.status = "half-day";
+      else record.status = "present";
+    } else {
+      record.status = status;
     }
+
+    await record.save();
 
     // -------------- UPDATE DB --------------
     await record.update({
@@ -1075,31 +1154,25 @@ exports.adminAddAttendance = async (req, res) => {
       return res.status(400).json({ message: "Attendance already submitted for this date" });
     }
 
-    let working_hours = "00:00:00";
-    if (time_in && time_out) {
-      const start = new Date(`${date}T${time_in}`);
-      const end = new Date(`${date}T${time_out}`);
-      const diff = end - start;
+    const tempRecord = {
+      time_in,
+      time_out,
+      work_start,
+      work_end,
+      lunch_start,
+      lunch_end,
+      break_start,
+      break_end,
+      date 
+    };
 
-      const h = Math.floor(diff / 3600000);
-      const m = Math.floor((diff % 3600000) / 60000);
-      const s = Math.floor((diff % 60000) / 1000);
-      working_hours = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-    }
-    let work_duration = null;
-    if (work_start && work_end) {
-      console.log("Calculating work_duration with:", { work_start, work_end, date });
-      work_duration = calculateDuration(work_start, work_end, date);
-      console.log("work_duration:", work_duration);
-
-    }
+    const durations = calculateAttendanceDurations(tempRecord);
 
     const newRecord = await Attendance.create({
       emp_id,
       date,
       time_in,
       time_out,
-      working_hours,
       status,
       work_start,
       work_end,
@@ -1107,8 +1180,14 @@ exports.adminAddAttendance = async (req, res) => {
       lunch_end,
       break_start,
       break_end,
-      work_duration
+      
+      working_hours: durations.working_hours,
+      work_duration: durations.work_duration,
+      office_hours: durations.office_hours,
+      break_duration: durations.break_duration,
+      lunch_duration: durations.lunch_duration
     });
+
 
     res.json({
       message: "Attendance added successfully",
@@ -1143,21 +1222,21 @@ function getISTDateString(date = null) {
   return d.toISOString().slice(0, 10);
 }
 
-function calculateDuration(startTime, endTime, date) {
-  if (!startTime || !endTime) return "00:00:00"; // or "not provided"
+// function calculateDuration(startTime, endTime, date) {
+//   if (!startTime || !endTime) return "00:00:00"; // or "not provided"
 
-  const start = new Date(`${date}T${startTime}`);
-  const end = new Date(`${date}T${endTime}`);
-  const diff = end - start;
+//   const start = new Date(`${date}T${startTime}`);
+//   const end = new Date(`${date}T${endTime}`);
+//   const diff = end - start;
 
-  if (isNaN(diff) || diff < 0) return "00:00:00";
+//   if (isNaN(diff) || diff < 0) return "00:00:00";
 
-  const h = Math.floor(diff / 3600000);
-  const m = Math.floor((diff % 3600000) / 60000);
-  const s = Math.floor((diff % 60000) / 1000);
+//   const h = Math.floor(diff / 3600000);
+//   const m = Math.floor((diff % 3600000) / 60000);
+//   const s = Math.floor((diff % 60000) / 1000);
 
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-}
+//   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+// }
 
 
 
@@ -1286,12 +1365,37 @@ exports.getAttendanceReport = async (req, res) => {
       const entry = recordMap[dateStr];
 
       let status = "not set", isPresent = "not set", time_in = null, time_out = null, working_hours = "00:00:00";
+      let work_start = null, work_end = null, lunch_start = null, lunch_end = null, break_start = null, break_end = null;
+      let durations = {
+        working_hours: "00:00:00",
+        work_duration: "00:00:00",
+        office_hours: "00:00:00",
+        break_duration: "00:00:00",
+        lunch_duration: "00:00:00",
+      };
 
       if (entry) {
-        status = entry.status;
         time_in = entry.time_in;
         time_out = entry.time_out;
-        working_hours = entry.working_hours || "00:00:00";
+        work_start = entry.work_start;
+        work_end = entry.work_end;
+        lunch_start = entry.lunch_start;
+        lunch_end = entry.lunch_end;
+        break_start = entry.break_start;
+        break_end = entry.break_end;
+        status = entry.status || "not set";
+
+        durations = calculateAttendanceDurations({
+          date: entry.date,
+          time_in,
+          time_out,
+          work_start,
+          work_end,
+          lunch_start,
+          lunch_end,
+          break_start,
+          break_end
+        });
 
         const [h, m, s] = working_hours.split(":").map(Number);
         totalSeconds += h * 3600 + m * 60 + s;
@@ -1310,25 +1414,22 @@ exports.getAttendanceReport = async (req, res) => {
         });
       }
 
-      const break_duration = entry?.break_start && entry?.break_end ? calculateDuration(entry.break_start, entry.break_end) : "00:00:00";
-      const lunch_duration = entry?.lunch_start && entry?.lunch_end ? calculateDuration(entry.lunch_start, entry.lunch_end) : "00:00:00";
+      // const break_duration = entry?.break_start && entry?.break_end ? calculateDuration(entry.break_start, entry.break_end) : "00:00:00";
+      // const lunch_duration = entry?.lunch_start && entry?.lunch_end ? calculateDuration(entry.lunch_start, entry.lunch_end) : "00:00:00";
 
       fullRecords.push({
         date: dateStr,
         time_in,
         time_out,
-        working_hours,
-        office_hours: entry?.office_hours || "00:00:00",
+        ...durations,
         status,
         isPresent,
-        break_duration,
-        lunch_duration,
-        work_start: entry?.work_start || null,
-        work_end: entry?.work_end || null,
-        lunch_start: entry?.lunch_start || null,
-        lunch_end: entry?.lunch_end || null,
-        break_start: entry?.break_start || null,
-        break_end: entry?.break_end || null,
+        work_start,
+        work_end,
+        lunch_start,
+        lunch_end,
+        break_start,
+        break_end,
         User: {
           name: user.name,
           empId: user.emp_id,
@@ -1500,26 +1601,45 @@ exports.getDailyLog = async (req, res) => {
       keyLearnings.push(attendance.key_learning);
     }
 
-    const breaks_log = [
-      {
-        sr_no: 1,
-        break_type: "Lunch Break",
-        start_time: attendance?.lunch_start || "",
+    
+
+    const attendanceDurations = attendance 
+    ? calculateAttendanceDurations({
+        date: selectedDateStr,
+        time_in: attendance.time_in,
+        time_out: attendance.time_out,
+        work_start: attendance.work_start,
+        work_end: attendance.work_end,
+        lunch_start: attendance.lunch_start,
+        lunch_end: attendance.lunch_end,
+        break_start: attendance.break_start,
+        break_end: attendance.break_end
+      }) 
+    : {
+        working_hours: "00:00:00",
+        work_duration: "00:00:00",
+        office_hours: "00:00:00",
+        break_duration: "00:00:00",
+        lunch_duration: "00:00:00"
+      };
+
+  const breaks_log = [
+    {
+      sr_no: 1,
+      break_type: "Lunch Break",
+      start_time: attendance?.lunch_start || "",
         end_time: attendance?.lunch_end || "",
-        duration: attendance?.lunch_start && attendance?.lunch_end
-          ? calculateDuration(attendance.lunch_start, attendance.lunch_end)
-          : "00:00"
+        duration: attendanceDurations.lunch_duration
       },
       {
         sr_no: 2,
         break_type: "Normal Break",
         start_time: attendance?.break_start || "",
         end_time: attendance?.break_end || "",
-        duration: attendance?.break_start && attendance?.break_end
-          ? calculateDuration(attendance.break_start, attendance.break_end)
-          : "00:00"
+        duration: attendanceDurations.break_duration
       }
     ];
+
 
     const dailyLog = {
       header: {
@@ -1805,6 +1925,26 @@ exports.adminGetLog = async (req, res) => {
 
       // Attendance
       const attendance = await Attendance.findOne({ where: { emp_id, date: selectedDateStr } });
+      const attendanceDurations = attendance 
+  ? calculateAttendanceDurations({
+      date: selectedDateStr,
+      time_in: attendance.time_in,
+      time_out: attendance.time_out,
+      work_start: attendance.work_start,
+      work_end: attendance.work_end,
+      lunch_start: attendance.lunch_start,
+      lunch_end: attendance.lunch_end,
+      break_start: attendance.break_start,
+      break_end: attendance.break_end
+    }) 
+  : {
+      working_hours: "00:00:00",
+      work_duration: "00:00:00",
+      office_hours: "00:00:00",
+      break_duration: "00:00:00",
+      lunch_duration: "00:00:00"
+    };
+
 
       const dailyLog = {
         header: {
@@ -1821,24 +1961,21 @@ exports.adminGetLog = async (req, res) => {
         tasks_completed_today: completed,
         pending_tasks: pending,
         next_day_todo: nextDay,
+        
         breaks_log: [
           {
             sr_no: 1,
             break_type: "Lunch Break",
             start_time: attendance?.lunch_start || "",
             end_time: attendance?.lunch_end || "",
-            duration: attendance?.lunch_start && attendance?.lunch_end
-              ? calculateDuration(attendance.lunch_start, attendance.lunch_end)
-              : "00:00"
+            duration: attendanceDurations.lunch_duration
           },
           {
             sr_no: 2,
             break_type: "Normal Break",
             start_time: attendance?.break_start || "",
             end_time: attendance?.break_end || "",
-            duration: attendance?.break_start && attendance?.break_end
-              ? calculateDuration(attendance.break_start, attendance.break_end)
-              : "00:00"
+            duration: attendanceDurations.break_duration
           }
         ],
         key_learnings_notes: attendance?.key_learning ? [attendance.key_learning, ...keyLearnings].join("\n") : keyLearnings.join("\n")

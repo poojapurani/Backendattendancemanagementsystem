@@ -44,6 +44,11 @@ const IdentityCard = sequelize.define(
                     type: DataTypes.STRING,
                     allowNull: true,
                 },
+        permission_ids: {
+            type: DataTypes.JSON,
+            allowNull: false,
+            defaultValue: []
+            }
     },
     {
         timestamps: true,   // createdAt, updatedAt auto

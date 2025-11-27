@@ -13,6 +13,6 @@ router.put("/status/:sr_no", authTodo, todoController.toggleTodoStatus);
 
 router.post("/remark/:sr_no", authTodo, todoController.addRemark);
 
-router.delete("/delete/:sr_no", authTodo, todoController.deleteTodo);
+//router.delete("/delete/:sr_no", authTodo, todoController.deleteTodo);
 
 module.exports = router;

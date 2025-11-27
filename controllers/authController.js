@@ -8,8 +8,8 @@ const Todo = require("../models/Todo");
 const IdentityCard = require("../models/IdentityCard");
 const WorkSession = require("../models/WorkSession");
 const timeSlots = require("../utils/timeSlots");
-
-
+const PermissionPreset = require("../models/PermissionPreset");
+const Permissions = require("../models/Permissions");
 
 
 
@@ -79,31 +79,12 @@ function incrementSerial(serial) {
 exports.register = async (req, res) => {
   try {
     const {
-
-      name,
-      user_id,
-      password,
-      role,
-      department,
-
-      member_type,
-      team_name,
-      status,
-
-      birthdate,
-      primary_contact,
-      contacts,
-
-      address_line1,
-      address_line2,
-      city,
-      state,
-      country,
-      pin_code,
-      profile_pic, slot_id
+      name, user_id, password, role, department,
+      member_type, team_name, status,
+      birthdate, primary_contact, contacts,
+      address_line1, address_line2, city, state, country,
+      pin_code, profile_pic, slot_id
     } = req.body;
-    //const {slot_id} = req.body;
-    
 
     if (!name || !user_id || !password || !member_type || !team_name || !address_line1 || !pin_code) {
       return res.status(400).json({ message: "Required fields missing!" });
@@ -120,11 +101,7 @@ exports.register = async (req, res) => {
       ? req.body.joining_date
       : new Date().toISOString().split("T")[0];
 
-    const teamCodes = {
-      shdpixel: "01",
-      metamatrix: "02",
-      aibams: "03",
-    };
+    const teamCodes = { shdpixel: "01", metamatrix: "02", aibams: "03" };
     const normalizedTeam = team_name.toLowerCase();
     const year = joining_date.split("-")[0];
 
@@ -132,16 +109,10 @@ exports.register = async (req, res) => {
       where: {
         member_type,
         team_name: normalizedTeam,
-
-        emp_id: { 
-          [Op.like]: `${member_type}${teamCodes[normalizedTeam]}${year}%` 
-        }
-
-
+        emp_id: { [Op.like]: `${member_type}${teamCodes[normalizedTeam]}${year}%` }
       },
       order: [["id", "DESC"]],
     });
-
 
     let serial = "AAAA";
     if (lastUser && lastUser.emp_id) {
@@ -158,19 +129,12 @@ exports.register = async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password.trim(), 12);
 
-    // -----------------------------------------------------
-    // ⭐ ADD WORK SESSION DURING REGISTRATION
-    // -----------------------------------------------------
-
     const slot = timeSlots[slot_id];
-    if (!slot) {
-      return res.status(400).json({ message: "Invalid slot_id" });
-    }
+    if (!slot) return res.status(400).json({ message: "Invalid slot_id" });
 
-
-
-
-    // Create User
+    // -----------------------------------------
+    // CREATE USER
+    // -----------------------------------------
     const newUser = await User.create({
       emp_id,
       name,
@@ -178,9 +142,8 @@ exports.register = async (req, res) => {
       password: hashedPassword,
       role: role || "User",
       department,
-      joining_date: joining_date || new Date(),
+      joining_date,
       status: status || "active",
-
       birthdate,
       primary_contact,
       contacts,
@@ -188,46 +151,101 @@ exports.register = async (req, res) => {
       member_type,
       team_name,
       address_line1,
-      address_line2: address_line2 || null,
+      address_line2,
       city: city || "Vadodara",
       state: state || "Gujarat",
       country: country || "India",
       pin_code,
-      profile_pic: profile_pic || null
+      profile_pic,
+      permission_ids: []   // default until auto-fill
     });
 
+    // -----------------------------------------
+    // AUTO-ASSIGN PERMISSION PRESET BASED ON ROLE
+    // -----------------------------------------
 
-    // Display user JSON
-    const displayUser = {
-      name: newUser.name,
-      user_id: newUser.user_id,
-      department: newUser.department,
-      member_type: newUser.member_type,
-      team_name: newUser.team_name,
-      role: newUser.role,
-      joining_date: newUser.joining_date,
-      status: newUser.status,
-      birthdate: newUser.birthdate,
-      address: newUser.address,
-      primary_contact: newUser.primary_contact,
-      contacts: newUser.contacts,
-      slot: newUser.slot
-    };
+    // -----------------------------------------
+    // FETCH PERMISSION PRESET BY NAME FROM BODY
+    // -----------------------------------------
+    // const preset_name = req.body.preset_name;   // <-- NEW
 
-    // Create Identity Card
+    // let presetPermissions = [];
 
-    const identity = await IdentityCard.create({
+    // if (preset_name) {
+    //   const preset = await PermissionPreset.findOne({
+    //     where: { name: preset_name }
+    //   });
+
+    //   if (!preset) {
+    //     return res.status(400).json({ message: `Preset '${preset_name}' not found` });
+    //   }
+
+    //   presetPermissions = Array.isArray(preset.permission_ids)
+    //     ? preset.permission_ids
+    //     : JSON.parse(preset.permission_ids || "[]");
+    // }
+
+
+    // Manual permissions from request
+    let manualPermissions = req.body.permission_ids;
+
+    if (!Array.isArray(manualPermissions)) {
+      return res.status(400).json({ message: "permission_ids must be an array" });
+    }
+
+    // Convert to numbers & remove invalid
+    manualPermissions = manualPermissions
+      .map(id => Number(id))
+      .filter(id => !isNaN(id));
+
+    manualPermissions = [...new Set(manualPermissions)]; // Remove duplicates
+
+    if (manualPermissions.length === 0) {
+      return res.status(400).json({ message: "No permissions assigned" });
+    }
+
+    // Validate all in ONE query
+    const validPermissions = await Permissions.findAll({
+      attributes: ["id"],
+      where: { id: manualPermissions },
+      raw: true
+    });
+
+    const validIds = validPermissions.map(p => p.id);
+
+    // If mismatch, identify invalid ones
+    if (validIds.length !== manualPermissions.length) {
+      const invalidIds = manualPermissions.filter(id => !validIds.includes(id));
+
+      return res.status(400).json({
+        message: "Some permissions are invalid",
+        invalid_ids: invalidIds,
+        valid_ids: validIds
+      });
+    }
+
+
+    // Assign to user
+    await newUser.update({ permission_ids: manualPermissions });
+
+    // -----------------------------------------
+    // Identity Card Creation + WorkSession
+    // -----------------------------------------
+    await IdentityCard.create({
       user_id: newUser.id,
       emp_id: newUser.emp_id,
       display_user: {
-           name: newUser.name,
-          user_id: newUser.user_id,
-          department: newUser.department,
-          member_type: newUser.member_type,
-          team_name: newUser.team_name,
-          joining_date: newUser.joining_date,
-          previous_emp_ids: "" 
-      }
+        name: newUser.name,
+        user_id: newUser.user_id,
+        department: newUser.department,
+        member_type: newUser.member_type,
+        team_name: newUser.team_name,
+        joining_date: newUser.joining_date,
+        previous_emp_ids: "",
+        permissions: manualPermissions
+
+      },
+      permission_ids: manualPermissions
     });
 
     await WorkSession.create({
@@ -237,9 +255,7 @@ exports.register = async (req, res) => {
       end_time: slot.end_time
     });
 
-
-    // -----------------------------------------------------
-
+    // -----------------------------------------
     res.status(201).json({
       message: "User registered successfully",
       emp_id_generated: emp_id,
@@ -251,6 +267,7 @@ exports.register = async (req, res) => {
     res.status(500).json({ message: "Internal server error", error: err.message });
   }
 };
+
 
 
 
@@ -281,14 +298,14 @@ exports.login = async (req, res) => {
         return res.status(400).json({ message: "Incorrect password" });
       }
 
-        // req.session.user = {
-        //   id: user.id,
-        //   emp_id: user.emp_id,
-        //   name: user.name,
-        //   user_id: user.user_id,
-        //   role: user.role,
-        //   department: user.department,
-        // };
+      // req.session.user = {
+      //   id: user.id,
+      //   emp_id: user.emp_id,
+      //   name: user.name,
+      //   user_id: user.user_id,
+      //   role: user.role,
+      //   department: user.department,
+      // };
 
       // Issue JWT for admin
       const token = jwt.sign(
@@ -300,6 +317,7 @@ exports.login = async (req, res) => {
           role: user.role,
           department: user.department,
           joining_date: user.joining_date,
+          permissions: ["*"],
         },
         process.env.JWT_SECRET,
         { expiresIn: "1h" }
@@ -319,13 +337,17 @@ exports.login = async (req, res) => {
       return res.status(400).json({ message: "Invalid emp_id" });
     }
 
-    let permissions = [];
-    if (identity.permission_id) {
-      const preset = await PermissionPreset.findByPk(identity.permission_id);
-      if (preset && preset.permission_ids) {
-        permissions = preset.permission_ids; // JSON array
-      }
+    let displayUser = identity.display_user;
+    if (typeof displayUser === "string") {
+      displayUser = JSON.parse(displayUser);
     }
+
+    let permissions = Array.isArray(displayUser.permissions) ? displayUser.permissions : [];
+
+    if (identity && identity.display_user && Array.isArray(identity.display_user.permissions)) {
+      permissions = identity.display_user.permissions;
+    }
+
     // Now fetch user using identity.user_id (FK)
     user = await User.findOne({ where: { id: identity.user_id } });
 
@@ -368,7 +390,7 @@ exports.login = async (req, res) => {
         role: user.role,
         department: user.department,
         joining_date: user.joining_date,
-       //permissions: permissions,
+        permissions: permissions
       },
       process.env.JWT_SECRET,
       { expiresIn: "1h" }
@@ -611,8 +633,8 @@ async function convertUser(oldUser, newType, req, res) {
       pin_code: oldUser.pin_code,              // inherit from old user
       slot: oldUser.slot,
       previous_emp_ids: oldUser.previous_emp_ids
-    ? oldUser.previous_emp_ids + "," + oldEmpId
-    : oldEmpId
+        ? oldUser.previous_emp_ids + "," + oldEmpId
+        : oldEmpId
     });
 
     // -----------------------------
@@ -628,7 +650,7 @@ async function convertUser(oldUser, newType, req, res) {
         member_type: newUser.member_type,
         team_name: newUser.team_name,
         joining_date: newUser.joining_date,
-        previous_emp_ids: prevIdsArray, 
+        previous_emp_ids: prevIdsArray,
       }
     });
 

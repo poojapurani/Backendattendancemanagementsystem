@@ -487,35 +487,35 @@ exports.addRemark = async (req, res) => {
 
 
 
-exports.deleteTodo = async (req, res) => {
-  try {
-    const userId = req.user.id; // from JWT
-    const identity = await IdentityCard.findOne({ where: { userId } });
-    if (!identity) return res.status(404).json({ message: "Identity card not found" });
-    const emp_id = identity.emp_id;
+// exports.deleteTodo = async (req, res) => {
+//   try {
+//     const userId = req.user.id; // from JWT
+//     const identity = await IdentityCard.findOne({ where: { userId } });
+//     if (!identity) return res.status(404).json({ message: "Identity card not found" });
+//     const emp_id = identity.emp_id;
 
-    const { sr_no } = req.params;
+//     const { sr_no } = req.params;
 
-    if (!(await isUserPunchedIn(emp_id))) {
-      return res.status(403).json({
-        message: "You must punch in before deleting todos."
-      });
-    }
+//     if (!(await isUserPunchedIn(emp_id))) {
+//       return res.status(403).json({
+//         message: "You must punch in before deleting todos."
+//       });
+//     }
 
-    if (await isUserPunchedOut(emp_id)) {
-      return res.status(403).json({
-        message: "You are already punched out. Cannot delete todos."
-      });
-    }
+//     if (await isUserPunchedOut(emp_id)) {
+//       return res.status(403).json({
+//         message: "You are already punched out. Cannot delete todos."
+//       });
+//     }
 
 
-    const deleted = await Todo.destroy({ where: { sr_no, emp_id } });
+//     const deleted = await Todo.destroy({ where: { sr_no, emp_id } });
 
-    if (!deleted) return res.status(404).json({ message: "Todo not found" });
+//     if (!deleted) return res.status(404).json({ message: "Todo not found" });
 
-    res.json({ message: "Todo deleted" });
-  } catch (error) {
-    res.status(500).json({ message: "Server error", error });
-  }
-};
+//     res.json({ message: "Todo deleted" });
+//   } catch (error) {
+//     res.status(500).json({ message: "Server error", error });
+//   }
+// };
 

@@ -30,6 +30,6 @@ const PermissionPreset = sequelize.define(
 );
 
 // Relation
-PermissionPreset.belongsTo(Permissions, { foreignKey: "permission_id" });
+PermissionPreset.belongsTo(Permissions, { foreignKey: "permission_ids" });
 
 module.exports = PermissionPreset;

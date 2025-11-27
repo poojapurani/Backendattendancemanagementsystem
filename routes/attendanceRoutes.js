@@ -4,11 +4,24 @@ const attendanceController = require("../controllers/attendanceController");
 const dashboardController = require("../controllers/dashboardController"); // ✅ ADD THIS
 //const { verifyToken, verifyAdmin } = require("../middlewares/authMiddleware");
 const { verifyToken, verifyAdmin, verifyUser } = require("../middlewares/authMiddleware");
+const { checkPermission } = require("../middlewares/checkPermission");
 
 
 // User routes
-router.post("/punchin", verifyToken, verifyUser, attendanceController.punchIn);
-router.put("/punchout", verifyToken, verifyUser, attendanceController.punchOut);
+router.post(
+  "/punchin",
+  verifyToken,
+  checkPermission("/api/attendance/punchin"),
+  attendanceController.punchIn
+);
+
+router.put(
+  "/punchout",
+  verifyToken,
+  checkPermission("/api/attendance/punchout"),
+  attendanceController.punchOut
+);
+
 //user report for a specific user daily, weekly, monthly
 router.get("/history", verifyToken, verifyUser, attendanceController.getHistory);
 router.post("/work-start", verifyToken, verifyUser, attendanceController.startWork);

@@ -1,16 +1,22 @@
-const Permission = require("../models/Permission");
+const Permissions = require("../models/Permissions");
 
 exports.checkPermission = (api) => {
   return async (req, res, next) => {
     try {
       const userPermissions = req.user.permissions; // from JWT
 
+      
+      if (typeof userPermissions === "string") {
+        userPermissions = JSON.parse(userPermissions);
+      }
+
+
       if (!userPermissions || userPermissions.length === 0) {
         return res.status(403).json({ message: "No permissions assigned" });
       }
 
       // Find permission for this API
-      const permission = await Permission.findOne({ where: { api } });
+      const permission = await Permissions.findOne({ where: { api } });
       if (!permission) {
         return res.status(403).json({ message: "Permission not found for API" });
       }
