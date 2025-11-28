@@ -46,18 +46,18 @@ exports.addPermission = async (req, res) => {
 };
 
 
-// exports.getAllPermissions = async (req, res) => {
-//   try {
-//     const permissions = await Permission.findAll({
-//       order: [["id", "ASC"]],
-//     });
+exports.getAllPermissions = async (req, res) => {
+  try {
+    const permissions = await Permission.findAll({
+      order: [["id", "ASC"]],
+    });
 
-//     res.json({ permissions });
-//   } catch (error) {
-//     console.error("Get Permissions Error:", error);
-//     res.status(500).json({ message: "Internal server error" });
-//   }
-// };
+    res.json({ permissions });
+  } catch (error) {
+    console.error("Get Permissions Error:", error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
 
 // exports.getPermissionById = async (req, res) => {
 //   try {

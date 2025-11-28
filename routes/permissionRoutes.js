@@ -11,7 +11,7 @@ const {
 } = require("../controllers/permissionController");
 
 // Middlewares (optional depending on your permission system)
-//const verifyToken = require("../middlewares/verifyToken");
+const verifyToken = require("../middlewares/authMiddleware");
 //const checkPermission = require("../middlewares/checkPermission");
 
 // --- CRUD API ROUTES ---
@@ -19,12 +19,10 @@ const {
 // Create Permission
 router.post("/add", addPermission);
 // Get All Permissions
-// router.get(
-//   "/",
-//   verifyToken,
-//   checkPermission("permissions.view"),
-//   getAllPermissions
-// );
+router.get(
+  "/getpermissions",
+  getAllPermissions
+);
 
 // // Get Single Permission
 // router.get(

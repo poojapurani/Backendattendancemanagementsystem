@@ -27,21 +27,21 @@ exports.addPreset = async (req, res) => {
 /**
  * ➤ Get all permission presets
  */
-// exports.getPresets = async (req, res) => {
-//   try {
-//     const presets = await PermissionPreset.findAll({
-//       include: [{ model: Permission }],
-//     });
+exports.getPresets = async (req, res) => {
+  try {
+    const presets = await PermissionPreset.findAll({
+      include: [{ model: Permissions }],
+    });
 
-//     return res.status(200).json({ presets });
-//   } catch (error) {
-//     console.error("Get Presets Error:", error);
-//     return res.status(500).json({
-//       message: "Internal server error",
-//       error: error.message,
-//     });
-//   }
-// };
+    return res.status(200).json({ presets });
+  } catch (error) {
+    console.error("Get Presets Error:", error);
+    return res.status(500).json({
+      message: "Internal server error",
+      error: error.message,
+    });
+  }
+};
 
 // /**
 //  * ➤ Get single preset by ID

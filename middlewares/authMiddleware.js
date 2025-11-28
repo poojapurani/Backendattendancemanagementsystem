@@ -1,17 +1,15 @@
 const jwt = require("jsonwebtoken");
 require("dotenv").config();
 const Attendance = require("../models/Attendance");
-
+const Session = require("../models/Session");
 
 /**
  * ✅ Verify JWT Token Middleware
  * - Checks for token in Authorization header
  * - Decodes and attaches user data to req.user
  */
-exports.verifyToken = (req, res, next) => {
-  // console.log("verifyToken running");
+exports.verifyToken = async (req, res, next) => {
   const authHeader = req.headers.authorization;
-  // console.log("Auth Header:", authHeader);
 
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     return res.status(401).json({ message: "Access denied. No token provided." });
@@ -20,20 +18,43 @@ exports.verifyToken = (req, res, next) => {
   try {
     const token = authHeader.split(" ")[1];
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    // console.log("Decoded JWT:", decoded);
 
+    // ✅ Check session DB for hijack / revoked / rotation
+    const session = await Session.findOne({
+      where: {
+        user_id: decoded.id,
+        access_token: token,
+        revoked: false
+      }
+    });
+
+    if (!session) {
+      return res.status(403).json({ message: "Invalid or revoked token." });
+    }
+
+    // ✅ Optional: check max session expiry
+    if (new Date() > session.max_expires_at) {
+      session.revoked = true;
+      session.revoked_reason = "Session expired (max)";
+      await session.save();
+      return res.status(403).json({ message: "Session expired." });
+    } 
+
+    // Attach user info from JWT
     req.user = {
       id: decoded.id,
       emp_id: decoded.emp_id,
       role: decoded.role,
       user_id: decoded.user_id,
       name: decoded.name,
-      permissions: decoded.permissions || []
+      permissions: decoded.permissions || [],
+      session_id: session.id
     };
 
     next();
+
   } catch (err) {
-    console.error("JWT Verification Error:", err);
+    console.error("JWT verification error:", err);
     return res.status(403).json({ message: "Invalid or expired token." });
   }
 };

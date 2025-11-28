@@ -4,7 +4,7 @@ const controller = require("../controllers/permissionPresetController");
 
 // CRUD
 router.post("/add", controller.addPreset);
-// router.get("/all", controller.getPresets);
+router.get("/getpresets", controller.getPresets);
 // router.get("/:id", controller.getPresetById);
 // router.put("/:id", controller.updatePreset);
 // router.delete("/:id", controller.deletePreset);

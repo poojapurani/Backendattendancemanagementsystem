@@ -10,8 +10,43 @@ const WorkSession = require("../models/WorkSession");
 const timeSlots = require("../utils/timeSlots");
 const PermissionPreset = require("../models/PermissionPreset");
 const Permissions = require("../models/Permissions");
+const { getLoginDelay, checkLoginRateLimit, handleFailedLogin, resetLoginAttempts } = require("../utils/loginRateLimit");
+const { generateRefreshToken, hashToken, } = require("../utils/token");
+const { getRefreshExpiry, getMaxExpiry } = require("../utils/sessionExpiry");
+const { createSession, generateAccessToken  } = require("../utils/sessionManager");
+const Session = require("../models/Session");
+const crypto = require("crypto");
+const { generateCsrfToken } = require("../middlewares/csrfProtection"); 
 
 
+
+// ----------------------------------------
+// HELPER: hash refresh token (top)
+// ----------------------------------------
+// function hashToken(token) {
+//   return crypto.createHash("sha256").update(token).digest("hex");
+// }
+
+exports.logout = async (req, res) => {
+  try {
+    // Get token from header
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(400).json({ message: "No token provided" });
+    }
+
+    const token = authHeader.split(" ")[1];
+
+    // ⛔ Add token to blacklist (optional, if you implement it)
+    await BlacklistToken.create({ token });
+
+    return res.status(200).json({ message: "Logged out successfully" });
+  } catch (error) {
+    console.error("Logout error:", error);
+    return res.status(500).json({ message: "Server error during logout" });
+  }
+};
 
 /*----------------------------------------------------
     ADMIN REGISTERS FIRST ADMIN ONLY ONCE
@@ -86,10 +121,16 @@ exports.register = async (req, res) => {
       pin_code, profile_pic, slot_id
     } = req.body;
 
+    // -----------------------------------------
+    // 1️⃣ BASIC REQUIRED FIELD VALIDATION
+    // -----------------------------------------
     if (!name || !user_id || !password || !member_type || !team_name || !address_line1 || !pin_code) {
       return res.status(400).json({ message: "Required fields missing!" });
     }
 
+    // -----------------------------------------
+    // 2️⃣ PASSWORD VALIDATION
+    // -----------------------------------------
     const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@_])[A-Za-z\d@_]{8}$/;
     if (!passwordRegex.test(password)) {
       return res.status(400).json({
@@ -97,6 +138,75 @@ exports.register = async (req, res) => {
       });
     }
 
+    // -----------------------------------------
+    // 3️⃣ **PERMISSION VALIDATION**
+    // -----------------------------------------
+    let manualPermissions = req.body.permission_ids;
+
+    // Case 1: undefined → missing from request
+    if (manualPermissions === undefined) {
+      return res.status(400).json({ message: "permission_ids is required" });
+    }
+
+    // Case 2: If sent as comma-separated string → "1,2,3"
+    if (typeof manualPermissions === "string") {
+      try {
+        // If JSON string "[1,2,3]"
+        const parsed = JSON.parse(manualPermissions);
+        manualPermissions = parsed;
+      } catch {
+        // If normal CSV "1,2,3"
+        manualPermissions = manualPermissions
+          .split(",")
+          .map(v => v.trim());
+      }
+    }
+
+    // Case 3: If single number
+    if (typeof manualPermissions === "number") {
+      manualPermissions = [manualPermissions];
+    }
+
+    // Case 4: Must be array now
+    if (!Array.isArray(manualPermissions)) {
+      return res.status(400).json({ message: "permission_ids must be an array" });
+    }
+
+    // Convert all to numbers
+    manualPermissions = manualPermissions.map(id => Number(id)).filter(id => !isNaN(id));
+
+    // Remove duplicates
+    manualPermissions = [...new Set(manualPermissions)];
+
+    // Empty array → not allowed
+    if (manualPermissions.length === 0) {
+      return res.status(400).json({ message: "No permissions assigned" });
+    }
+
+    // Validate permissions in one query
+    const validPermissions = await Permissions.findAll({
+      where: { id: manualPermissions },
+      attributes: ["id"]
+    });
+
+    const validIds = validPermissions.map(p => p.id);
+
+    if (validIds.length !== manualPermissions.length) {
+      const invalidIds = manualPermissions.filter(id => !validIds.includes(id));
+      return res.status(400).json({
+        message: "Some permissions are invalid",
+        invalid_ids: invalidIds
+      });
+    }
+
+
+    // ---------------------------------------------------------
+    // Permission validation PASSED → Proceed further
+    // ---------------------------------------------------------
+
+    // -----------------------------------------
+    // 4️⃣ EMP_ID GENERATION
+    // -----------------------------------------
     const joining_date = req.body.joining_date
       ? req.body.joining_date
       : new Date().toISOString().split("T")[0];
@@ -122,18 +232,24 @@ exports.register = async (req, res) => {
 
     const emp_id = `${member_type}${teamCodes[normalizedTeam]}${year}${serial}`;
 
+    // -----------------------------------------
+    // 5️⃣ DUPLICATE EMAIL CHECK
+    // -----------------------------------------
     const existing = await User.findOne({ where: { user_id } });
     if (existing) {
       return res.status(400).json({ message: "User already exists" });
     }
 
+    // -----------------------------------------
+    // 6️⃣ HASH PASSWORD & SLOT VALIDATION
+    // -----------------------------------------
     const hashedPassword = await bcrypt.hash(password.trim(), 12);
 
     const slot = timeSlots[slot_id];
     if (!slot) return res.status(400).json({ message: "Invalid slot_id" });
 
     // -----------------------------------------
-    // CREATE USER
+    // 7️⃣ CREATE USER (SAFE - After permission validation)
     // -----------------------------------------
     const newUser = await User.create({
       emp_id,
@@ -157,79 +273,11 @@ exports.register = async (req, res) => {
       country: country || "India",
       pin_code,
       profile_pic,
-      permission_ids: []   // default until auto-fill
+      permission_ids: manualPermissions
     });
 
     // -----------------------------------------
-    // AUTO-ASSIGN PERMISSION PRESET BASED ON ROLE
-    // -----------------------------------------
-
-    // -----------------------------------------
-    // FETCH PERMISSION PRESET BY NAME FROM BODY
-    // -----------------------------------------
-    // const preset_name = req.body.preset_name;   // <-- NEW
-
-    // let presetPermissions = [];
-
-    // if (preset_name) {
-    //   const preset = await PermissionPreset.findOne({
-    //     where: { name: preset_name }
-    //   });
-
-    //   if (!preset) {
-    //     return res.status(400).json({ message: `Preset '${preset_name}' not found` });
-    //   }
-
-    //   presetPermissions = Array.isArray(preset.permission_ids)
-    //     ? preset.permission_ids
-    //     : JSON.parse(preset.permission_ids || "[]");
-    // }
-
-
-    // Manual permissions from request
-    let manualPermissions = req.body.permission_ids;
-
-    if (!Array.isArray(manualPermissions)) {
-      return res.status(400).json({ message: "permission_ids must be an array" });
-    }
-
-    // Convert to numbers & remove invalid
-    manualPermissions = manualPermissions
-      .map(id => Number(id))
-      .filter(id => !isNaN(id));
-
-    manualPermissions = [...new Set(manualPermissions)]; // Remove duplicates
-
-    if (manualPermissions.length === 0) {
-      return res.status(400).json({ message: "No permissions assigned" });
-    }
-
-    // Validate all in ONE query
-    const validPermissions = await Permissions.findAll({
-      attributes: ["id"],
-      where: { id: manualPermissions },
-      raw: true
-    });
-
-    const validIds = validPermissions.map(p => p.id);
-
-    // If mismatch, identify invalid ones
-    if (validIds.length !== manualPermissions.length) {
-      const invalidIds = manualPermissions.filter(id => !validIds.includes(id));
-
-      return res.status(400).json({
-        message: "Some permissions are invalid",
-        invalid_ids: invalidIds,
-        valid_ids: validIds
-      });
-    }
-
-
-    // Assign to user
-    await newUser.update({ permission_ids: manualPermissions });
-
-    // -----------------------------------------
-    // Identity Card Creation + WorkSession
+    // 8️⃣ CREATE IDENTITY CARD
     // -----------------------------------------
     await IdentityCard.create({
       user_id: newUser.id,
@@ -243,11 +291,13 @@ exports.register = async (req, res) => {
         joining_date: newUser.joining_date,
         previous_emp_ids: "",
         permissions: manualPermissions
-
       },
       permission_ids: manualPermissions
     });
 
+    // -----------------------------------------
+    // 9️⃣ CREATE WORK SESSION
+    // -----------------------------------------
     await WorkSession.create({
       emp_id,
       name: newUser.name,
@@ -255,6 +305,8 @@ exports.register = async (req, res) => {
       end_time: slot.end_time
     });
 
+    // -----------------------------------------
+    // 🔟 SUCCESS RESPONSE
     // -----------------------------------------
     res.status(201).json({
       message: "User registered successfully",
@@ -268,14 +320,9 @@ exports.register = async (req, res) => {
   }
 };
 
-
-
-
-
 /*----------------------------------------------------
     LOGIN (ADMIN & EMPLOYEE)
 ----------------------------------------------------*/
-
 exports.login = async (req, res) => {
   try {
     let { emp_id, password } = req.body;
@@ -286,127 +333,389 @@ exports.login = async (req, res) => {
 
     emp_id = emp_id.trim();
 
-    // 1️⃣ CHECK IF ADMIN LOGIN
-    let user = await User.findOne({ where: { emp_id } });
+    // ----------------------------------------------------------
+    // 1️⃣ CHECK IF ADMIN LOGIN (directly from users table)
+    // ----------------------------------------------------------
+    let adminUser = await User.findOne({ where: { emp_id } });
 
-    if (user && user.role === "Admin") {
-      // ADMIN --> validate directly from USER table
-
-      const isMatch = await bcrypt.compare(password.trim(), user.password);
-
+    if (adminUser && adminUser.role === "Admin") {
+      const isMatch = await bcrypt.compare(password.trim(), adminUser.password);
       if (!isMatch) {
         return res.status(400).json({ message: "Incorrect password" });
       }
 
-      // req.session.user = {
-      //   id: user.id,
-      //   emp_id: user.emp_id,
-      //   name: user.name,
-      //   user_id: user.user_id,
-      //   role: user.role,
-      //   department: user.department,
-      // };
-
-      // Issue JWT for admin
-      const token = jwt.sign(
-        {
-          id: user.id,
-          emp_id: user.emp_id,
-          name: user.name,
-          user_id: user.user_id,
-          role: user.role,
-          department: user.department,
-          joining_date: user.joining_date,
-          permissions: ["*"],
-        },
-        process.env.JWT_SECRET,
-        { expiresIn: "1h" }
+      // Create session for Admin (permissions = "*")
+      const { access_token, refresh_token } = await createSession(
+        adminUser,
+        req,
+        res,
+        { permissions: ["*"] }
       );
+
+      //const csrfToken = generateCsrfToken(refresh_token);
 
       return res.status(200).json({
         message: "Admin login successful",
-        token,
-        user,
+        // access_token,
+        // refresh_token,
+        user: {
+          id: adminUser.id,
+          name: adminUser.name,
+          emp_id: adminUser.emp_id,
+          role: adminUser.role,
+          department: adminUser.department,
+          permissions: ["*"],
+        },
+        //csrfToken
       });
     }
 
-    // 2️⃣ NORMAL USER LOGIN - Fetch emp_id from IdentityCard
+    // ----------------------------------------------------------
+    // 2️⃣ NORMAL USER LOGIN — first validate emp_id from Identity Card
+    // ----------------------------------------------------------
     const identity = await IdentityCard.findOne({ where: { emp_id } });
-
     if (!identity) {
       return res.status(400).json({ message: "Invalid emp_id" });
     }
 
-    let displayUser = identity.display_user;
-    if (typeof displayUser === "string") {
-      displayUser = JSON.parse(displayUser);
+    const user_id = identity.user_id;
+
+    // 3️⃣ Rate-limit check for normal users
+    const limit = await checkLoginRateLimit(emp_id, user_id);
+    if (!limit.allowed) {
+      return res.status(429).json({
+        message: "Too many failed attempts. Try again later.",
+        retry_after_seconds: limit.wait
+      });
     }
 
-    let permissions = Array.isArray(displayUser.permissions) ? displayUser.permissions : [];
-
-    if (identity && identity.display_user && Array.isArray(identity.display_user.permissions)) {
-      permissions = identity.display_user.permissions;
-    }
-
-    // Now fetch user using identity.user_id (FK)
-    user = await User.findOne({ where: { id: identity.user_id } });
-
+    // 4️⃣ Fetch actual user from users table
+    const user = await User.findByPk(user_id);
     if (!user) {
-      return res.status(400).json({ message: "User not found for this Identity Card" });
+      await handleFailedLogin(user_id);
+      return res.status(400).json({ message: "User not found" });
     }
 
     if (user.status === "deactivated") {
       return res.status(403).json({ message: "Your account is deactivated." });
     }
 
-    // Compare password from User table
+    // 5️⃣ Password verify from users table
     const isMatch = await bcrypt.compare(password.trim(), user.password);
-
     if (!isMatch) {
+      await handleFailedLogin(user_id);
       return res.status(400).json({ message: "Incorrect password" });
     }
 
-    if (!user.role || user.role.trim() === "") {
-      user.role = "User";
+    await resetLoginAttempts(user_id);
+
+    // 6️⃣ Parse permissions from identity.display_user
+    let displayUser = identity.display_user;
+    if (typeof displayUser === "string") {
+      displayUser = JSON.parse(displayUser);
     }
 
+    const permissions = Array.isArray(displayUser.permissions)
+      ? displayUser.permissions
+      : [];
 
-    // req.session.user = {
-    //   id: user.id,
-    //   emp_id: identity.emp_id,
-    //   name: user.name,
-    //   user_id: user.user_id,
-    //   role: user.role,
-    //   department: user.department,
-    //  // permissions: permissions,
-    // };
-    // Generate JWT
-    const token = jwt.sign(
-      {
-        id: user.id,
-        emp_id: identity.emp_id,   // emp_id from identity card
-        name: user.name,
-        user_id: user.user_id,
-        role: user.role,
-        department: user.department,
-        joining_date: user.joining_date,
-        permissions: permissions
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: "1h" }
+    // 7️⃣ Create Session
+    const { access_token, refresh_token } = await createSession(
+      user,
+      req,
+      res,
+      { permissions }
     );
+
+    //const csrfToken = generateCsrfToken(refresh_token);
 
     return res.status(200).json({
       message: "Login successful",
-      token,
-      user,
+      // access_token,
+      // refresh_token,
+      user: {
+        id: user.id,
+        name: user.name,
+        emp_id: identity.emp_id,
+        role: user.role,
+        department: user.department,
+        permissions,
+        displayUser
+      },
+     // csrfToken
+    });
+
+  } catch (error) {
+    console.error("Login error:", error);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+/*----------------------------------------------------*/
+
+
+// exports.login = async (req, res) => {
+//   try {
+//     let { emp_id, password } = req.body;
+
+//     if (!emp_id || !password) {
+//       return res.status(400).json({ message: "Please provide emp_id and password" });
+//     }
+
+//     emp_id = emp_id.trim();
+
+//     // 1️⃣ CHECK IF ADMIN LOGIN
+//     let user = await User.findOne({ where: { emp_id } });
+
+//     if (user && user.role === "Admin") {
+//       // ADMIN --> validate directly from USER table
+
+//       const isMatch = await bcrypt.compare(password.trim(), user.password);
+
+//       if (!isMatch) {
+//         return res.status(400).json({ message: "Incorrect password" });
+//       }
+
+//       // req.session.user = {
+//       //   id: user.id,
+//       //   emp_id: user.emp_id,
+//       //   name: user.name,
+//       //   user_id: user.user_id,
+//       //   role: user.role,
+//       //   department: user.department,
+//       // };
+
+//       // Issue JWT for admin
+//       const token = jwt.sign(
+//         {
+//           id: user.id,
+//           emp_id: user.emp_id,
+//           name: user.name,
+//           user_id: user.user_id,
+//           role: user.role,
+//           department: user.department,
+//           joining_date: user.joining_date,
+//           permissions: ["*"],
+//         },
+//         process.env.JWT_SECRET,
+//         { expiresIn: "1h" }
+//       );
+
+//       return res.status(200).json({
+//         message: "Admin login successful",
+//         token,
+//         user,
+//       });
+//     }
+
+//     // 2️⃣ NORMAL USER LOGIN - Fetch emp_id from IdentityCard
+//     const identity = await IdentityCard.findOne({ where: { emp_id } });
+
+//     if (!identity) {
+//       return res.status(400).json({ message: "Invalid emp_id" });
+//     }
+
+//     let displayUser = identity.display_user;
+//     if (typeof displayUser === "string") {
+//       displayUser = JSON.parse(displayUser);
+//     }
+
+//     let permissions = Array.isArray(displayUser.permissions) ? displayUser.permissions : [];
+
+//     if (identity && identity.display_user && Array.isArray(identity.display_user.permissions)) {
+//       permissions = identity.display_user.permissions;
+//     }
+
+//     // Now fetch user using identity.user_id (FK)
+//     user = await User.findOne({ where: { id: identity.user_id } });
+
+//     if (!user) {
+//       return res.status(400).json({ message: "User not found for this Identity Card" });
+//     }
+
+//     if (user.status === "deactivated") {
+//       return res.status(403).json({ message: "Your account is deactivated." });
+//     }
+
+//     // Compare password from User table
+//     const isMatch = await bcrypt.compare(password.trim(), user.password);
+
+//     if (!isMatch) {
+//       return res.status(400).json({ message: "Incorrect password" });
+//     }
+
+//     if (!user.role || user.role.trim() === "") {
+//       user.role = "User";
+//     }
+
+
+//     // req.session.user = {
+//     //   id: user.id,
+//     //   emp_id: identity.emp_id,
+//     //   name: user.name,
+//     //   user_id: user.user_id,
+//     //   role: user.role,
+//     //   department: user.department,
+//     //  // permissions: permissions,
+//     // };
+//     // Generate JWT
+//     const token = jwt.sign(
+//       {
+//         id: user.id,
+//         emp_id: identity.emp_id,   // emp_id from identity card
+//         name: user.name,
+//         user_id: user.user_id,
+//         role: user.role,
+//         department: user.department,
+//         joining_date: user.joining_date,
+//         permissions: permissions
+//       },
+//       process.env.JWT_SECRET,
+//       { expiresIn: "1h" }
+//     );
+
+//     return res.status(200).json({
+//       message: "Login successful",
+//       token,
+//       user,
+//     });
+
+//   } catch (err) {
+//     console.error(err);
+//     res.status(500).json({ message: "Internal server error" });
+//   }
+// };
+
+
+
+exports.refreshAccessToken = async (req, res) => {
+  try {
+    const refresh_token = req.cookies.refresh_token;
+
+    if (!refresh_token) {
+      return res.status(401).json({ message: "No refresh token provided" });
+    }
+
+    const refresh_hash = crypto
+      .createHash("sha256")
+      .update(refresh_token)
+      .digest("hex");
+
+    const session = await Session.findOne({ where: { refresh_token_hash: refresh_hash, revoked: false } });
+
+    if (!session) {
+      return res.status(401).json({ message: "Invalid or expired refresh token" });
+    }
+
+    if (new Date() > session.refresh_expires_at) {
+      return res.status(401).json({ message: "Refresh token expired" });
+    }
+
+    // Fetch user
+    const user = await session.getUser();
+    if (!user) {
+      return res.status(400).json({ message: "User not found" });
+    }
+
+    // Generate a new JWT access token
+    const new_access_token = generateAccessToken(user);
+
+    // Update last used time
+    session.last_used_at = new Date();
+    await session.save();
+
+    return res.json({
+      access_token: new_access_token
     });
 
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Internal server error" });
+    console.error("Refresh token error:", err);
+    return res.status(500).json({ message: "Internal server error" });
   }
 };
+
+
+// exports.refresh = async (req, res) => {
+//   try {
+//     const refresh = req.cookies.refresh_token;
+//     if (!refresh) return res.status(401).json({ message: "No refresh token" });
+
+//     const hash = hashToken(refresh);
+
+//     // 1️⃣ Find valid session
+//     const oldSession = await Session.findOne({
+//       where: { refresh_token_hash: hash, revoked: false }
+//     });
+
+//     if (!oldSession) {
+//       return res.status(403).json({ message: "Invalid refresh token" });
+//     }
+
+//     // 2️⃣ Expiry checks
+//     const now = new Date();
+
+//     if (now > oldSession.refresh_expires_at) {
+//       oldSession.revoked = true;
+//       oldSession.revoked_reason = "Refresh expired";
+//       await oldSession.save();
+//       return res.status(403).json({ message: "Refresh expired" }); 
+//     }
+
+//     if (now > oldSession.max_expires_at) {
+//       oldSession.revoked = true;
+//       oldSession.revoked_reason = "Max session expired (2 days)";
+//       await oldSession.save();
+//       return res.status(403).json({ message: "Full session lifetime ended" });
+//     }
+
+//     // 3️⃣ HIJACK CHECK (IP mismatch)
+//     if (oldSession.device_info && oldSession.device_info.ip !== req.ip) {
+//       oldSession.revoked = true;
+//       oldSession.revoked_reason = "Session hijack detected";
+//       await oldSession.save();
+
+//       res.clearCookie("refresh_token");
+//       return res.status(403).json({ message: "Session revoked: hijack detected" });
+//     }
+
+//     // 4️⃣ ROTATE TOKEN  → Create NEW session row
+//     const newRefresh = generateRefreshToken();
+//     const newHash = hashToken(newRefresh);
+//     const newAccess = generateAccessToken();
+
+//     const newSession = await Session.create({
+//       user_id: oldSession.user_id,
+//       refresh_token_hash: newHash,
+//       access_token: newAccess,
+//       device_info: oldSession.device_info,
+//       issued_at: new Date(),
+//       refresh_expires_at: getRefreshExpiry(), // +30m
+//       max_expires_at: oldSession.max_expires_at,
+//       rotated_from: oldSession.id
+//     });
+
+//     // Link the old session forward
+//     oldSession.rotated_to = newSession.id;
+//     oldSession.revoked = true;
+//     oldSession.revoked_reason = "Rotated";
+//     await oldSession.save();
+
+//     // 5️⃣ Send rotated refresh token in cookie
+//     res.cookie("refresh_token", newRefresh, {
+//       httpOnly: true,
+//       secure: true,
+//       sameSite: null,
+//       maxAge: 30 * 60 * 1000 // 30m
+//     });
+
+//     return res.json({ access_token: newAccess });
+
+//   } catch (err) {
+//     console.error(err);
+//     res.status(500).json({ message: "Internal error" });
+//   }
+// };
+
 
 
 // 📌 Get Today's Attendance Status for a User

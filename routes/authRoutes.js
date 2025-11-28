@@ -9,6 +9,9 @@ router.post("/register", verifyToken, verifyAdmin, authController.register);
 
 // Public login
 router.post("/login", authController.login);
+router.post('/logout', verifyToken, authController.logout);
+
+router.post("/refresh", authController.refreshAccessToken);
 
 // 📌 Attendance status route 
 // router.get("/today-status", verifyToken, authController.getTodayAttendanceStatus);

@@ -1222,21 +1222,21 @@ function getISTDateString(date = null) {
   return d.toISOString().slice(0, 10);
 }
 
-// function calculateDuration(startTime, endTime, date) {
-//   if (!startTime || !endTime) return "00:00:00"; // or "not provided"
+function calculateDuration(startTime, endTime, date) {
+  if (!startTime || !endTime) return "00:00:00"; // or "not provided"
 
-//   const start = new Date(`${date}T${startTime}`);
-//   const end = new Date(`${date}T${endTime}`);
-//   const diff = end - start;
+  const start = new Date(`${date}T${startTime}`);
+  const end = new Date(`${date}T${endTime}`);
+  const diff = end - start;
 
-//   if (isNaN(diff) || diff < 0) return "00:00:00";
+  if (isNaN(diff) || diff < 0) return "00:00:00";
 
-//   const h = Math.floor(diff / 3600000);
-//   const m = Math.floor((diff % 3600000) / 60000);
-//   const s = Math.floor((diff % 60000) / 1000);
+  const h = Math.floor(diff / 3600000);
+  const m = Math.floor((diff % 3600000) / 60000);
+  const s = Math.floor((diff % 60000) / 1000);
 
-//   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-// }
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
 
 
 

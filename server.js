@@ -6,20 +6,21 @@ const Attendance = require("./models/Attendance");
 const User = require("./models/User");
 const { Op } = require("sequelize");
 const authMiddleware = require('./middlewares/authMiddleware');
-
+const cookieParser = require("cookie-parser");
 dotenv.config();
 
 const app = express();
 
 const corsOptions = {
-  origin: "https://689ce9e0-1020-4096-8895-935ac4370c05-00-1570umgkihas6.pike.replit.dev",
+  origin: ["https://30bb8b66-db59-41a0-be34-5949c793b98f-00-3l0ib63qho6g1.pike.replit.dev","http://localhost:5000"],
   methods: "GET,HEAD,PUT,PATCH,POST,DELETE",
   credentials: true,
 };
 
-
 app.use(cors(corsOptions));
 app.use(express.json());
+
+app.use(cookieParser());
 
 function isServerInIST() {
   const offsetMinutes = new Date().getTimezoneOffset(); 
@@ -97,26 +98,11 @@ const permissionPresetRoutes = require("./routes/permissionPresetRoutes");
 
 
 app.use("/api/settings", settingsRoutes);
-
 app.use("/api/auth", authRoutes);
-
 app.use("/api/todos",authMiddleware.verifyToken, authMiddleware.requireMissedPunchoutRemark, todoRoutes);
-
-app.use(
-  "/api/attendance",
-  authMiddleware.verifyToken,
-  authMiddleware.requireMissedPunchoutRemark,
-  attendanceRoutes
-);
-
-app.use(
-  "/api/dashboard",
-  authMiddleware.verifyToken,
-  authMiddleware.requireMissedPunchoutRemark,
-  dashboardRoutes
-);
+app.use("/api/attendance",authMiddleware.verifyToken,authMiddleware.requireMissedPunchoutRemark,attendanceRoutes);
+app.use("/api/dashboard",authMiddleware.verifyToken,authMiddleware.requireMissedPunchoutRemark,dashboardRoutes);
 app.use("/api/work-sessions", workSessionRoutes);
-
 app.use("/api/permissions", permissionRoutes);
 app.use("/api/presets", permissionPresetRoutes);
 
