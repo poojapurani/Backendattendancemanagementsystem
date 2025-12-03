@@ -9,21 +9,25 @@ const Session = require("../models/Session");
  * - Decodes and attaches user data to req.user
  */
 exports.verifyToken = async (req, res, next) => {
-  const authHeader = req.headers.authorization;
-
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return res.status(401).json({ message: "Access denied. No token provided." });
-  }
-
   try {
-    const token = authHeader.split(" ")[1];
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const authHeader = req.headers.authorization;
+    //console.log("Auth Header:", authHeader);
 
-    // ✅ Check session DB for hijack / revoked / rotation
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ message: "Access denied. No token provided." });
+    }
+
+    const token = authHeader.split(" ")[1];
+    //console.log("Token:", token);
+    const decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
+    //console.log("Decoded JWT:", decoded);
+
+    // Validate session by session_id and jti
     const session = await Session.findOne({
       where: {
         user_id: decoded.id,
-        access_token: token,
+        session_id: decoded.session_id,
+        access_jti: decoded.jti,
         revoked: false
       }
     });
@@ -38,7 +42,7 @@ exports.verifyToken = async (req, res, next) => {
       session.revoked_reason = "Session expired (max)";
       await session.save();
       return res.status(403).json({ message: "Session expired." });
-    } 
+    }
 
     // Attach user info from JWT
     req.user = {
@@ -48,6 +52,7 @@ exports.verifyToken = async (req, res, next) => {
       user_id: decoded.user_id,
       name: decoded.name,
       permissions: decoded.permissions || [],
+      jti: decoded.jti,
       session_id: session.id
     };
 
@@ -55,7 +60,7 @@ exports.verifyToken = async (req, res, next) => {
 
   } catch (err) {
     console.error("JWT verification error:", err);
-    return res.status(403).json({ message: "Invalid or expired token." });
+    return res.status(500).json({ message: "Internal Server Error" });
   }
 };
 

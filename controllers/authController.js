@@ -13,10 +13,10 @@ const Permissions = require("../models/Permissions");
 const { getLoginDelay, checkLoginRateLimit, handleFailedLogin, resetLoginAttempts } = require("../utils/loginRateLimit");
 const { generateRefreshToken, hashToken, } = require("../utils/token");
 const { getRefreshExpiry, getMaxExpiry } = require("../utils/sessionExpiry");
-const { createSession, generateAccessToken  } = require("../utils/sessionManager");
+const { createSession, generateAccessToken, hashWithSalt } = require("../utils/sessionManager");
 const Session = require("../models/Session");
 const crypto = require("crypto");
-const { generateCsrfToken } = require("../middlewares/csrfProtection"); 
+const { generateCsrfToken } = require("../middlewares/csrfProtection");
 
 
 
@@ -27,26 +27,26 @@ const { generateCsrfToken } = require("../middlewares/csrfProtection");
 //   return crypto.createHash("sha256").update(token).digest("hex");
 // }
 
-exports.logout = async (req, res) => {
-  try {
-    // Get token from header
-    const authHeader = req.headers.authorization;
+// exports.logout = async (req, res) => {
+//   try {
+//     // Get token from header
+//     const authHeader = req.headers.authorization;
 
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(400).json({ message: "No token provided" });
-    }
+//     if (!authHeader || !authHeader.startsWith("Bearer ")) {
+//       return res.status(400).json({ message: "No token provided" });
+//     }
 
-    const token = authHeader.split(" ")[1];
+//     const token = authHeader.split(" ")[1];
 
-    // ⛔ Add token to blacklist (optional, if you implement it)
-    await BlacklistToken.create({ token });
+//     await Session.destroy({ where: { refresh_token_hash: hashToken(token) } });
 
-    return res.status(200).json({ message: "Logged out successfully" });
-  } catch (error) {
-    console.error("Logout error:", error);
-    return res.status(500).json({ message: "Server error during logout" });
-  }
-};
+
+//     return res.status(200).json({ message: "Logged out successfully" });
+//   } catch (error) {
+//     console.error("Logout error:", error);
+//     return res.status(500).json({ message: "Server error during logout" });
+//   }
+// };
 
 /*----------------------------------------------------
     ADMIN REGISTERS FIRST ADMIN ONLY ONCE
@@ -179,9 +179,10 @@ exports.register = async (req, res) => {
     manualPermissions = [...new Set(manualPermissions)];
 
     // Empty array → not allowed
-    if (manualPermissions.length === 0) {
-      return res.status(400).json({ message: "No permissions assigned" });
+    if (!manualPermissions || manualPermissions.length === 0) {
+      return res.status(400).json({ message: "Please assign at least one permission" });
     }
+
 
     // Validate permissions in one query
     const validPermissions = await Permissions.findAll({
@@ -351,6 +352,7 @@ exports.login = async (req, res) => {
         res,
         { permissions: ["*"] }
       );
+      console.log(access_token);
 
       //const csrfToken = generateCsrfToken(refresh_token);
 
@@ -419,7 +421,7 @@ exports.login = async (req, res) => {
       ? displayUser.permissions
       : [];
 
-    // 7️⃣ Create Session
+    // // 7️⃣ Create Session
     const { access_token, refresh_token } = await createSession(
       user,
       req,
@@ -428,7 +430,7 @@ exports.login = async (req, res) => {
     );
 
     //const csrfToken = generateCsrfToken(refresh_token);
-
+    console.log(access_token);
     return res.status(200).json({
       message: "Login successful",
       // access_token,
@@ -442,7 +444,7 @@ exports.login = async (req, res) => {
         permissions,
         displayUser
       },
-     // csrfToken
+      // csrfToken
     });
 
   } catch (error) {
@@ -452,8 +454,6 @@ exports.login = async (req, res) => {
 };
 
 /*----------------------------------------------------*/
-
-
 // exports.login = async (req, res) => {
 //   try {
 //     let { emp_id, password } = req.body;
@@ -588,7 +588,7 @@ exports.login = async (req, res) => {
 
 
 
-exports.refreshAccessToken = async (req, res) => {
+exports.getAccessToken = async (req, res) => {
   try {
     const refresh_token = req.cookies.refresh_token;
 
@@ -596,43 +596,219 @@ exports.refreshAccessToken = async (req, res) => {
       return res.status(401).json({ message: "No refresh token provided" });
     }
 
-    const refresh_hash = crypto
-      .createHash("sha256")
-      .update(refresh_token)
-      .digest("hex");
+    // // --------------------------------------------
+    // // 1️⃣ Extract user_id from refresh token payload
+    // //    (We do NOT verify signature here)
+    // // --------------------------------------------
+    // let decoded;
+    // try {
+    //   decoded = jwt.decode(refresh_token);
+    //   if (!decoded?.id) {
+    //     return res.status(403).json({ message: "Invalid refresh token" });
+    //   }
+    // } catch (err) {
+    //   return res.status(403).json({ message: "Invalid refresh token" });
+    // }
 
-    const session = await Session.findOne({ where: { refresh_token_hash: refresh_hash, revoked: false } });
+    // const user_id = decoded.id;
+
+    // // --------------------------------------------
+    // // 2️⃣ Fetch only current user's sessions
+    // // --------------------------------------------
+    // const userSessions = await Session.findAll({
+    //   where: { user_id, revoked: false }
+    // });
+
+    // if (!userSessions.length) {
+    //   return res.status(403).json({ message: "Session not found" });
+    // }
+
+    // // --------------------------------------------
+    // // 3️⃣ Match hashed refresh token
+    // // --------------------------------------------
+    // let session = null;
+
+    // for (const s of userSessions) {
+    //   if (!s.refresh_token_salt) continue;
+
+    //   const hashed = hashWithSalt(refresh_token, s.refresh_token_salt);
+
+    //   if (hashed === s.refresh_token_hash) {
+    //     session = s;
+    //     break;
+    //   }
+    // }
+
+    // if (!session) {
+    //   return res.status(403).json({ message: "Invalid refresh token" });
+    //}
+
+    // 1️⃣ Get refresh token from cookie
+    // const refresh_token = req.cookies.refresh_token;
+
+    // if (!refresh_token) {
+    //   return res.status(401).json({ message: "No refresh token provided" });
+    // }
+
+    // 2️⃣ Get all non-revoked sessions of all users (we will match by hash)
+    const userSessions = await Session.findAll({
+      where: { revoked: false },
+    });
+
+    let session = null;
+    for (const s of userSessions) {
+      const hashed = hashWithSalt(refresh_token, s.refresh_token_salt);
+      if (hashed === s.refresh_token_hash) {
+        session = s;
+        break;
+      }
+    }
 
     if (!session) {
-      return res.status(401).json({ message: "Invalid or expired refresh token" });
+      return res.status(403).json({ message: "Invalid refresh token" });
     }
 
+    const user_id = session.user_id;
+
+
+    // --------------------------------------------
+    // 4️⃣ Check max session life (2 days)
+    // --------------------------------------------
+    if (new Date() > session.max_expires_at) {
+      session.revoked = true;
+      session.revoked_reason = "Max session lifetime exceeded";
+      await session.save();
+      res.clearCookie("refresh_token");
+      return res.status(403).json({ message: "Session expired. Please login again." });
+    }
+
+    // --------------------------------------------
+    // 5️⃣ If refresh expired → rotate refresh token
+    // --------------------------------------------
     if (new Date() > session.refresh_expires_at) {
-      return res.status(401).json({ message: "Refresh token expired" });
+
+      const new_refresh = crypto.randomBytes(64).toString("hex");
+      const new_salt = crypto.randomBytes(32).toString("hex");
+      const new_hash = hashWithSalt(new_refresh, new_salt);
+
+      const user = await User.findByPk(user_id);
+      const new_jti = crypto.randomBytes(16).toString("hex");
+
+
+      let displayUser = null;
+      let permissions = [];
+
+      // Admin → fetch from User table
+      if (user.role && user.role.toLowerCase() === "admin") {
+        displayUser = {
+          id: user.id,
+          emp_id: user.emp_id,
+          role: "Admin",
+        };
+        permissions = []; // No permissions for admin
+      } else {
+        // Normal user → fetch from IdentityCard
+        const identity = await IdentityCard.findOne({ where: { user_id: user.id } });
+        if (!identity) return res.status(404).json({ message: "Identity not found" });
+
+        displayUser = identity.display_user;
+        if (typeof displayUser === "string") displayUser = JSON.parse(displayUser);
+        permissions = Array.isArray(displayUser.permissions) ? displayUser.permissions : [];
+      }
+
+      // // Generate new access token
+      // const new_access = generateAccessToken(
+      //   user,
+      //   session.access_jti,
+      //   session.session_id,
+      //   permissions
+      // );
+
+      const new_access = generateAccessToken(
+        user,
+        new_jti,
+        session.session_id,
+        permissions
+      );
+
+      session.refresh_token_hash = new_hash;
+      session.refresh_token_salt = new_salt;
+      session.refresh_expires_at = new Date(Date.now() + 30 * 60 * 1000); // 30 min
+      session.access_jti = new_jti;
+      session.access_token = new_access;
+      session.revoked = false;
+      session.revoked_reason = null;
+      await session.save();
+
+      res.cookie("refresh_token", new_refresh, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+        maxAge: 30 * 60 * 1000
+      });
+
+      return res.status(200).json({
+        access_token: new_access,
+        message: "Rotated tokens"
+      });
     }
 
-    // Fetch user
+    // -------------------------------
+    // 2️⃣ Refresh token still valid → issue new access token
+    // -------------------------------
+
     const user = await session.getUser();
-    if (!user) {
-      return res.status(400).json({ message: "User not found" });
+    if (!user) return res.status(400).json({ message: "User not found" });
+
+
+    let displayUser = null;
+    let permissions = [];
+
+    // Admin → fetch from User table
+    if (user.role && user.role.toLowerCase() === "admin") {
+      displayUser = {
+        id: user.id,
+        emp_id: user.emp_id,
+        role: "Admin",
+      };
+      permissions = []; // No permissions for admin
+    } else {
+      // Normal user → fetch from IdentityCard
+      const identity = await IdentityCard.findOne({ where: { user_id: user.id } });
+      if (!identity) return res.status(404).json({ message: "Identity not found" });
+
+      displayUser = identity.display_user;
+      if (typeof displayUser === "string") displayUser = JSON.parse(displayUser);
+      permissions = Array.isArray(displayUser.permissions) ? displayUser.permissions : [];
     }
 
-    // Generate a new JWT access token
-    const new_access_token = generateAccessToken(user);
+    // Generate new access token
+    // const new_access = generateAccessToken(
+    //   user,
+    //   session.access_jti,
+    //   session.session_id,
+    //   permissions
+    // );
 
-    // Update last used time
+    const new_access = generateAccessToken(
+      user,
+      session.access_jti,
+      session.session_id,
+      permissions
+    );
+
+    session.access_token = new_access;
     session.last_used_at = new Date();
     await session.save();
 
-    return res.json({
-      access_token: new_access_token
-    });
+    return res.json({ access_token: new_access });
 
   } catch (err) {
-    console.error("Refresh token error:", err);
+    console.error("getAccessToken error:", err);
     return res.status(500).json({ message: "Internal server error" });
   }
 };
+
 
 
 // exports.refresh = async (req, res) => {
@@ -799,48 +975,64 @@ exports.getAllUsers = async (req, res) => {
 // 🔥 API: Convert Intern → Employee
 // POST /users/convert-intern/:emp_id
 // ==========================================
+// 
+
 exports.convertInternToEmployee = async (req, res) => {
   try {
     const empId = req.params.emp_id;
+    const { convert_to } = req.body; // INT or EMP
 
-    // 1️⃣ Fetch identity card by emp_id
+    // 0️⃣ Validate convert_to
+    if (!convert_to || !["INT", "EMP"].includes(convert_to)) {
+      return res.status(400).json({
+        message: "convert_to must be either INT or EMP",
+      });
+    }
+
+    // 1️⃣ Fetch identity card + user
     const identity = await IdentityCard.findOne({
       where: { emp_id: empId },
-      include: [{
-        model: User,
-        as: "user"   // ⭐ MUST MATCH ASSOCIATION ALIAS
-      }]
+      include: [{ model: User, as: "user" }],
     });
 
     if (!identity) {
-      return res.status(404).json({ message: "Intern not found" });
+      return res.status(404).json({ message: "User not found" });
     }
 
     const oldUser = identity.user;
+    const oldType = oldUser.member_type; // TEMP or INT
 
-    // 2️⃣ Check member_type
-    if (oldUser.member_type !== "INT") {
-      return res.status(400).json({ message: "This user is not an intern" });
+    // 2️⃣ Valid transitions
+    const validTransitions = {
+      TEMP: ["INT", "EMP"],
+      INT: ["EMP"],
+      EMP: [], // EMP cannot convert further
+    };
+
+    if (!validTransitions[oldType].includes(convert_to)) {
+      return res.status(400).json({
+        message: `Invalid conversion. You cannot convert ${oldType} → ${convert_to}.`,
+      });
     }
 
-    // 3️⃣ Convert to Employee (existing convertUser logic)
-    await convertUser(oldUser, "EMP", req, res);
+    // 3️⃣ Perform conversion (create new user, new identity, migrate data)
+    await convertUser(oldUser, convert_to, req, res);
 
-    // 4️⃣ Fetch the newly created employee
+    // 4️⃣ Fetch newly created user
     const newUser = await User.findOne({
-      where: { user_id: oldUser.user_id, member_type: "EMP" },
-      order: [["id", "DESC"]]
+      where: { user_id: oldUser.user_id, member_type: convert_to },
+      order: [["id", "DESC"]],
     });
 
     if (!newUser) {
-      return res.status(500).json({ message: "Employee conversion failed" });
+      return res.status(500).json({ message: "Conversion failed" });
     }
 
-    // 5️⃣ Update additional fields (including member_type or team_name change)
+    // 5️⃣ Allow admin to update optional fields
     await normalUpdateUser(newUser, req, res);
 
   } catch (err) {
-    console.error("Error in conversion:", err);
+    console.error("Conversion Error:", err);
     res.status(500).json({ message: "Server error", error: err.message });
   }
 };
@@ -941,9 +1133,12 @@ async function convertUser(oldUser, newType, req, res) {
       address_line1: oldUser.address_line1,    // inherit from old user
       pin_code: oldUser.pin_code,              // inherit from old user
       slot: oldUser.slot,
-      previous_emp_ids: oldUser.previous_emp_ids
-        ? oldUser.previous_emp_ids + "," + oldEmpId
-        : oldEmpId
+      previous_emp_ids: Array.isArray(oldUser.previous_emp_ids)
+        ? [...oldUser.previous_emp_ids, oldEmpId].join(",")
+        : oldUser.previous_emp_ids
+          ? oldUser.previous_emp_ids + "," + oldEmpId
+          : oldEmpId
+
     });
 
     // -----------------------------
@@ -959,8 +1154,9 @@ async function convertUser(oldUser, newType, req, res) {
         member_type: newUser.member_type,
         team_name: newUser.team_name,
         joining_date: newUser.joining_date,
-        previous_emp_ids: prevIdsArray,
-      }
+        previous_emp_ids: prevIdsArray.join(","),
+      },
+      previous_emp_ids: prevIdsArray.join(","),
     });
 
     // -----------------------------
@@ -1009,12 +1205,13 @@ async function convertUser(oldUser, newType, req, res) {
     // -----------------------------
     await oldUser.update({ status: "deactivated" });
 
-    return res.status(200).json({
+    return {
       message: `Converted to ${newType}`,
+      old_emp_id: oldUser.emp_id,
       new_emp_id: newEmpId,
-      old_emp_id: oldEmpId,
       new_user_id: newUser.id
-    });
+    };
+
 
   } catch (err) {
     console.error("Conversion Error:", err);
@@ -1081,10 +1278,10 @@ async function normalUpdateUser(user, req, res) {
 
     await user.update(updatePayload);
 
-    return res.status(200).json({
-      message: "User updated successfully",
+    return {
+      updated: true,
       updated_data: updatePayload,
-    });
+    };
 
   } catch (err) {
     console.error("Normal Update Error:", err);

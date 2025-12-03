@@ -210,6 +210,18 @@ function getISTTimeString() {
   return `${hours}:${minutes}:${seconds}`;
 }
 
+const isBreakOngoing = async (emp_id) => {
+  const today = getISTDateString();
+  const r = await Attendance.findOne({ where: { emp_id, date: today } });
+  if (!r) return false;
+
+  const normalBreak = r.break_start && !r.break_end;
+  const lunchBreak = r.lunch_start && !r.lunch_end;
+
+  return normalBreak || lunchBreak;
+};
+
+
 exports.toggleTodoStatus = async (req, res) => {
   try {
     const userId = req.user.id; // from JWT
@@ -239,7 +251,7 @@ exports.toggleTodoStatus = async (req, res) => {
         message: "Work has ended for today. Cannot modify tasks."
       });
     }
-    
+
     if (!action) {
       return res.status(400).json({ message: "Action is required (start, pause, complete)" });
     }
@@ -274,31 +286,59 @@ exports.toggleTodoStatus = async (req, res) => {
     // START (includes resume)
     if (action === "start") {
 
-        if (!todo.total_tracked_time) {
-          todo.total_tracked_time = "00:00:00";
+      // 🚨 If break is ongoing → auto end break before starting todo
+      if (await isBreakOngoing(emp_id)) {
+
+        const today = getISTDateString();
+        const nowIST = getISTTimeString();
+
+        const r = await Attendance.findOne({ where: { emp_id, date: today } });
+
+        if (r.break_start && !r.break_end) {
+          await r.update({ break_end: nowIST });
+
+          const d = calculateAttendanceDurations(r);
+          r.break_duration = d.break_duration;
+          await r.save();
         }
 
+        if (r.lunch_start && !r.lunch_end) {
+          await r.update({ lunch_end: nowIST });
 
-        // FIRST START CASE
-        if (!todo.start_time && todo.status !== "pause") {
-            todo.start_time = currentTime;
-            todo.status = "start";
+          const d = calculateAttendanceDurations(r);
+          r.lunch_duration = d.lunch_duration;
+          await r.save();
         }
 
-        // RESUME CASE (status = pause)
-        else if (todo.status === "pause") {
+        // ❗ DO NOT RESUME paused todos here → they must stay paused
+      }
 
-            // Reset start_time to NOW (IMPORTANT)
-            todo.start_time = currentTime;
 
-            todo.status = "start";
-        }
+      if (!todo.total_tracked_time) {
+        todo.total_tracked_time = "00:00:00";
+      }
 
-        else if (todo.status === "complete") {
+
+      // FIRST START CASE
+      if (!todo.start_time && todo.status !== "pause") {
+        todo.start_time = currentTime;
+        todo.status = "start";
+      }
+
+      // RESUME CASE (status = pause)
+      else if (todo.status === "pause") {
+
+        // Reset start_time to NOW (IMPORTANT)
+        todo.start_time = currentTime;
+
+        todo.status = "start";
+      }
+
+      else if (todo.status === "complete") {
         const { remark } = req.body;
 
         if (!remark || remark.trim() === "") {
-            return res.status(400).json({ message: "Remark is required to restart a completed task" });
+          return res.status(400).json({ message: "Remark is required to restart a completed task" });
         }
 
         // Save remark (append to key_learning or overwrite as per your logic)
@@ -307,10 +347,10 @@ exports.toggleTodoStatus = async (req, res) => {
         todo.start_time = currentTime; // reset start_time
         todo.status = "start";
         // total_tracked_time is kept as-is
-    }
+      }
 
-        await todo.save();
-        return res.json({ message: "Task started/resumed", todo });
+      await todo.save();
+      return res.json({ message: "Task started/resumed", todo });
     }
 
 
@@ -318,29 +358,29 @@ exports.toggleTodoStatus = async (req, res) => {
     // PAUSE
     else if (action === "pause") {
 
-        if (!todo.start_time) {
-            return res.status(400).json({ message: "Cannot pause: task not started yet" });
-        }
+      if (!todo.start_time) {
+        return res.status(400).json({ message: "Cannot pause: task not started yet" });
+      }
 
-        const start = safeDate(todo.start_time);
-        if (!start) return res.status(400).json({ message: "Invalid start_time for task" });
+      const start = safeDate(todo.start_time);
+      if (!start) return res.status(400).json({ message: "Invalid start_time for task" });
 
-        const end = safeDate(currentTime);
+      const end = safeDate(currentTime);
 
-        const diffSeconds = (end - start) / 1000;
+      const diffSeconds = (end - start) / 1000;
 
-        const previous = toSeconds(todo.total_tracked_time);
-        const updated = previous + diffSeconds;
+      const previous = toSeconds(todo.total_tracked_time);
+      const updated = previous + diffSeconds;
 
-        todo.total_tracked_time = toHHMMSS(updated);
+      todo.total_tracked_time = toHHMMSS(updated);
 
-        // DO NOT RESET start_time (as per your requirement)
-        // todo.start_time = null;
+      // DO NOT RESET start_time (as per your requirement)
+      // todo.start_time = null;
 
-        todo.status = "pause";
+      todo.status = "pause";
 
-        await todo.save();
-        return res.json({ message: "Task paused", todo });
+      await todo.save();
+      return res.json({ message: "Task paused", todo });
     }
 
 
@@ -368,14 +408,14 @@ exports.toggleTodoStatus = async (req, res) => {
     // RESET
     else if (action === "reset") {
 
-        // Reset all tracking
-        todo.start_time = null;
-        todo.total_tracked_time = "00:00:00";
-        todo.status = "not_started"; // or whatever default you use
-        todo.key_learning = null; // optional: clear any notes if needed
+      // Reset all tracking
+      todo.start_time = null;
+      todo.total_tracked_time = "00:00:00";
+      todo.status = "not_started"; // or whatever default you use
+      todo.key_learning = null; // optional: clear any notes if needed
 
-        await todo.save();
-        return res.json({ message: "Task has been reset to start over", todo });
+      await todo.save();
+      return res.json({ message: "Task has been reset to start over", todo });
     }
 
 

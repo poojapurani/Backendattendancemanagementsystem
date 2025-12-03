@@ -13,13 +13,14 @@ function getISTDate() {
 }
 
 
-function getISTDateString() {
-  const d = getISTDate();
+function getISTDateString(dateObj = new Date()) {
+  const d = getISTDate(dateObj);
   const year = d.getFullYear();
   const month = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
 }
+
 
 function getISTTimeString() {
   const d = getISTDate();
@@ -64,6 +65,7 @@ function calculateAttendanceDurations(record) {
   if (!record || !record.date) return {};
 
   const dateStr = record.date;
+  const now = new Date();
 
   const timeIn = parseTime(record.time_in, dateStr);
   const timeOut = parseTime(record.time_out, dateStr);
@@ -84,10 +86,17 @@ function calculateAttendanceDurations(record) {
   // 3️⃣ Office hours = working hours minus break & lunch
 
   const officeSeconds = diffInSeconds(timeIn, timeOut);
-  const workSeconds = workingSeconds - breakSeconds - lunchSeconds;
+
+  // Prevent negative durations
+  // if (workingSeconds < 0) workingSeconds = 0;
+  // if (breakSeconds < 0) breakSeconds = 0;
+  // if (lunchSeconds < 0) lunchSeconds = 0;
+  // if (officeSeconds < 0) officeSeconds = 0;
+  let workSeconds = workingSeconds - breakSeconds - lunchSeconds;
+  if (workSeconds < 0) workSeconds = 0;
 
   // 4️⃣ Work duration (from work_start → work_end)
-  
+
 
   return {
     working_hours: formatHHMMSS(workSeconds),
@@ -97,6 +106,9 @@ function calculateAttendanceDurations(record) {
     work_duration: formatHHMMSS(workingSeconds)
   };
 }
+// if calculateAttendanceDurations is declared in this file:
+module.exports.calculateAttendanceDurations = calculateAttendanceDurations;
+
 
 // Get emp_id from IdentityCard safely
 
@@ -273,6 +285,49 @@ function secondsToHHMMSS(totalSeconds) {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
+// Pause all active tasks for an employee
+const pauseActiveTodos = async (emp_id) => {
+  const todos = await Todo.findAll({ where: { emp_id, status: "start" } });
+  const now = new Date().toTimeString().split(" ")[0];
+
+  const toSeconds = (t) => {
+    if (!t || t === "NaN:NaN:NaN") return 0;
+    const [h, m, s] = t.split(":").map(Number);
+    return h * 3600 + m * 60 + s;
+  };
+
+  const toHHMMSS = (sec) => {
+    const h = String(Math.floor(sec / 3600)).padStart(2, "0");
+    const m = String(Math.floor((sec % 3600) / 60)).padStart(2, "0");
+    const s = String(sec % 60).padStart(2, "0");
+    return `${h}:${m}:${s}`;
+  };
+
+  for (let todo of todos) {
+    if (todo.start_time) {
+      const start = new Date(`1970-01-01 ${todo.start_time}`);
+      const end = new Date(`1970-01-01 ${now}`);
+      const diffSeconds = (end - start) / 1000;
+      const prev = toSeconds(todo.total_tracked_time);
+      todo.total_tracked_time = toHHMMSS(prev + diffSeconds);
+      todo.status = "pause";
+      await todo.save();
+    }
+  }
+};
+
+// Resume paused tasks for an employee
+// const resumePausedTodos = async (emp_id) => {
+//   const todos = await Todo.findAll({ where: { emp_id, status: "pause" } });
+//   const now = new Date().toTimeString().split(" ")[0];
+
+//   for (let todo of todos) {
+//     todo.start_time = now;
+//     todo.status = "start";
+//     await todo.save();
+//   }
+// };
+
 // const calculateDuration = (start, end) => {
 //   if (!start || !end) return "00:00:00";
 
@@ -309,6 +364,7 @@ exports.startBreak = async (req, res) => {
       return res.status(400).json({ message: "Lunch break ongoing!" });
 
     await record.update({ break_start: nowIST, break_end: null });
+    await pauseActiveTodos(emp_id);
 
     const setting = await Setting.findOne();
     const max_duration_minutes = setting?.break || 30;
@@ -344,8 +400,10 @@ exports.endBreak = async (req, res) => {
     const durations = calculateAttendanceDurations(record);
     record.break_duration = durations.break_duration;
 
+
     await record.save();
 
+   
 
     res.json({
       message: "Break ended",
@@ -379,6 +437,7 @@ exports.startLunch = async (req, res) => {
       return res.status(400).json({ message: "Normal break ongoing!" });
 
     await record.update({ lunch_start: now, lunch_end: null });
+    await pauseActiveTodos(emp_id);
 
     const setting = await Setting.findOne();
     const max_duration_minutes = setting ? setting.lunch : 45;
@@ -413,10 +472,11 @@ exports.endLunch = async (req, res) => {
     await record.update({ lunch_end: now });
 
     //const duration = calculateDuration(record.lunch_start, now);
-     const durations = calculateAttendanceDurations(record);
+    const durations = calculateAttendanceDurations(record);
 
-     record.lunch_duration = durations.lunch_duration;
-     await record.save();
+    record.lunch_duration = durations.lunch_duration;
+
+    await record.save();
 
     res.json({
       message: "Lunch ended",
@@ -744,6 +804,27 @@ exports.getHistory = async (req, res) => {
       // NOT SET RULE
       // If punch starts on a later date, earlier dates = NOT SET
       if (!r) {
+
+        // const dayOfWeek = d.getDay(); // Sunday = 0
+        // if (dayOfWeek === 0) {
+        //   return {
+        //     date: dateStr,
+        //     time_in: null,
+        //     time_out: null,
+        //     working_hours: "00:00:00",
+        //     office_hours: "00:00:00",
+        //     status: "not set",
+        //     isPresent: "not set",
+        //     break_duration: "00:00:00",
+        //     lunch_duration: "00:00:00",
+        //     work_start: null,
+        //     work_end: null,
+        //     lunch_start: null,
+        //     lunch_end: null,
+        //     break_start: null,
+        //     break_end: null
+        //   };
+        // }
         const firstPunch = Object.keys(map)[0];
         if (dateStr >= joiningStr && (!firstPunch || dateStr < firstPunch)) {
           return {
@@ -770,6 +851,27 @@ exports.getHistory = async (req, res) => {
       let recordData = {};
       if (r) {
         status = r.status;
+        // If Sunday: always NOT SET even if DB has empty/incorrect status
+        if (new Date(dateStr).getDay() === 0) {
+          return {
+            date: dateStr,
+            time_in: null,
+            time_out: null,
+            working_hours: "00:00:00",
+            office_hours: "00:00:00",
+            status: "not set",
+            isPresent: "not set",
+            break_duration: "00:00:00",
+            lunch_duration: "00:00:00",
+            work_start: null,
+            work_end: null,
+            lunch_start: null,
+            lunch_end: null,
+            break_start: null,
+            break_end: null
+          };
+        }
+
 
         const normalized = (status || "").trim().toLowerCase();
 
@@ -816,8 +918,8 @@ exports.getHistory = async (req, res) => {
         date: dateStr,
         time_in,
         time_out,
-        
-        
+
+
         status,
         isPresent,
         working_hours: recordData.working_hours || "00:00:00",
@@ -854,21 +956,19 @@ exports.getHistory = async (req, res) => {
     } else if (period === "weekly") {
       const day = today.getDay(); // Monday = 1
 
-      // If today is Monday → only show Monday
-      if (day === 1) {
-        startStr = todayStr;
-      } else {
-        // week starts Monday
-        const start = getISTDate();
-        const diff = (day + 6) % 7; // convert Sun(0)→6
-        start.setDate(getISTDate() - diff);
-        startStr = getISTDateString();
-      }
+      let start = new Date(todayStr);
 
-      finalRecords = allFormatted.filter(r => r.date >= startStr && r.date <= todayStr);
+      // Calculate Monday of the current week
+      const diff = (day + 6) % 7; // convert Sun(0)->6, Mon(1)->0, Tue(2)->1 ...
+      start.setDate(start.getDate() - diff);
 
-      // ---------- MONTHLY ---------- //
-    } else if (period === "monthly") {
+      const startStr = start.toISOString().split("T")[0];
+
+      finalRecords = allFormatted.filter(
+        r => r.date >= startStr && r.date <= todayStr
+      );
+    }
+    else if (period === "monthly") {
       const isFirstMonth =
         today.getFullYear() === joiningDate.getFullYear() &&
         today.getMonth() === joiningDate.getMonth();
@@ -895,7 +995,10 @@ exports.getHistory = async (req, res) => {
 
       // Requested month start and end
       let startS = `${year}-${String(month).padStart(2, "0")}-01`;
-      let endS = `${year}-${String(month).padStart(2, "0")}-${getISTDate()}`;
+
+      let lastDay = new Date(year, month, 0).getDate();  // last day of requested month
+      let endS = `${year}-${String(month).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+
 
       // If requested month **ends before joining** → truly no data
       if (new Date(endS) < joiningDate) {
@@ -911,17 +1014,16 @@ exports.getHistory = async (req, res) => {
         });
       }
 
-      // Trim start if requested start is before joining
       if (new Date(startS) < joiningDate) startS = joiningStr;
-
-      // Trim end if requested end is after today
       if (new Date(endS) > today) endS = todayStr;
+
 
       startStr = startS;
 
       finalRecords = allFormatted.filter(
         (r) => r.date >= startS && r.date <= endS
       );
+
     }
 
     const startDate = startStr;
@@ -1010,7 +1112,7 @@ exports.editAttendance = async (req, res) => {
     // // Fetch emp_id from IdentityCard
     // const emp_id = await getEmpId(user_id);
 
-    const emp_id = req.params.emp_id; 
+    const emp_id = req.params.emp_id;
     const { date } = req.params;
 
     const {
@@ -1056,7 +1158,7 @@ exports.editAttendance = async (req, res) => {
     // -------------- STATUS LOGIC SAME AS BEFORE --------------
     let finalStatus = status || record.status;
 
-        if (!status) {
+    if (!status) {
       const reportingTime = new Date(`${date}T09:30:00`);
       const halfDayCut = new Date(`${date}T13:30:00`);
       const punchInTime = record.time_in ? new Date(`${date}T${record.time_in}`) : null;
@@ -1073,10 +1175,10 @@ exports.editAttendance = async (req, res) => {
 
     // -------------- UPDATE DB --------------
     await record.update({
-      time_in: newTimeIn,
-      time_out: newTimeOut,
+      time_in,
+      time_out,
       status: finalStatus,
-      working_hours,
+      working_hours: durations.working_hours,
       work_start: work_start || record.work_start,
       work_end: work_end || record.work_end,
       lunch_start: lunch_start || record.lunch_start,
@@ -1163,7 +1265,7 @@ exports.adminAddAttendance = async (req, res) => {
       lunch_end,
       break_start,
       break_end,
-      date 
+      date
     };
 
     const durations = calculateAttendanceDurations(tempRecord);
@@ -1180,7 +1282,7 @@ exports.adminAddAttendance = async (req, res) => {
       lunch_end,
       break_start,
       break_end,
-      
+
       working_hours: durations.working_hours,
       work_duration: durations.work_duration,
       office_hours: durations.office_hours,
@@ -1247,9 +1349,6 @@ function secondsToHHMMSS(sec) {
   return `${h}:${m}:${s}`;
 }
 
-// ---------------- MAIN FUNCTION ----------------
-
-
 exports.getAttendanceReport = async (req, res) => {
   try {
     let emp_id;
@@ -1304,17 +1403,44 @@ exports.getAttendanceReport = async (req, res) => {
 
     if (periodType === "daily") {
       startDate = endDate = today;
+
     } else if (periodType === "weekly") {
       const day = today.getDay();
       const mondayOffset = day === 0 ? -6 : 1 - day;
       const weekStart = new Date(today);
       weekStart.setDate(today.getDate() + mondayOffset);
       startDate = joiningDate > weekStart ? joiningDate : weekStart;
+
     } else if (periodType === "monthly") {
-      const isFirstMonth = today.getFullYear() === joiningDate.getFullYear() && today.getMonth() === joiningDate.getMonth();
-      startDate = isFirstMonth ? joiningDate : new Date(today.getFullYear(), today.getMonth(), 1);
-      endDate = today;
-    } else if (periodType === "yearly") {
+
+
+      // Build start & end of this month using YYYY-MM-DD (IST safe)
+      const year = today.getFullYear();
+      const month = today.getMonth() + 1;
+
+      let startS = `${year}-${String(month).padStart(2, "0")}-01`;
+      let endS = getISTDateString(today); // today is the end
+
+
+
+      // If employee joined this month → start from joining day
+      if (
+        joiningDate.getFullYear() === today.getFullYear() &&
+        joiningDate.getMonth() === today.getMonth()
+      ) {
+
+        startS = joiningStr;
+      } else {
+
+      }
+
+      startDate = new Date(startS);
+      endDate = new Date(endS);
+
+
+    }
+
+    else if (periodType === "yearly") {
       const year = parseInt(req.query.year);
       const month = parseInt(req.query.month);
       if (!year || !month || month < 1 || month > 12)
@@ -1363,6 +1489,7 @@ exports.getAttendanceReport = async (req, res) => {
     while (ptr <= endDate) {
       const dateStr = getISTDateString(ptr);
       const entry = recordMap[dateStr];
+      const isSunday = new Date(ptr.toLocaleString("en-US", { timeZone: "Asia/Kolkata" })).getDay() === 0;
 
       let status = "not set", isPresent = "not set", time_in = null, time_out = null, working_hours = "00:00:00";
       let work_start = null, work_end = null, lunch_start = null, lunch_end = null, break_start = null, break_end = null;
@@ -1373,6 +1500,34 @@ exports.getAttendanceReport = async (req, res) => {
         break_duration: "00:00:00",
         lunch_duration: "00:00:00",
       };
+
+
+      if (isSunday) {
+        status = "not set";
+        isPresent = "not set";
+
+        // Override DB if needed
+        if (entry && entry.status !== "not set") {
+          entry.status = "not set";
+          entry.time_in = null;
+          entry.time_out = null;
+          entry.working_hours = "00:00:00";
+
+          await Attendance.update(
+            {
+              status: "not set",
+              time_in: null,
+              time_out: null,
+              working_hours: "00:00:00"
+            },
+            { where: { emp_id, date: dateStr } }
+          );
+        }
+      };
+
+
+
+
 
       if (entry) {
         time_in = entry.time_in;
@@ -1403,16 +1558,33 @@ exports.getAttendanceReport = async (req, res) => {
         isPresent = ["present", "late", "half-day"].includes(status);
         if (isPresent) present++;
         if (status === "absent") absent++;
-      } else if (firstPunchDate && dateStr > firstPunchDate && dateStr < todayStr) {
+      } else if (
+        firstPunchDate &&
+        dateStr > firstPunchDate &&
+        dateStr < todayStr &&
+        !isSunday       // ⛔ DO NOT mark absent on Sunday
+      ) {
         status = "absent";
         isPresent = false;
         absent++;
 
         await Attendance.findOrCreate({
           where: { emp_id, date: dateStr },
-          defaults: { emp_id, date: dateStr, time_in: null, time_out: null, working_hours: "00:00:00", status: "absent" },
+          defaults: {
+            emp_id,
+            date: dateStr,
+            time_in: null,
+            time_out: null,
+            working_hours: "00:00:00",
+            status: "absent"
+          },
         });
+      } else if (isSunday) {
+        // ☀️ SUNDAY → NO ABSENT
+        status = "not set";
+        isPresent = "not set";
       }
+
 
       // const break_duration = entry?.break_start && entry?.break_end ? calculateDuration(entry.break_start, entry.break_end) : "00:00:00";
       // const lunch_duration = entry?.lunch_start && entry?.lunch_end ? calculateDuration(entry.lunch_start, entry.lunch_end) : "00:00:00";
@@ -1601,10 +1773,10 @@ exports.getDailyLog = async (req, res) => {
       keyLearnings.push(attendance.key_learning);
     }
 
-    
 
-    const attendanceDurations = attendance 
-    ? calculateAttendanceDurations({
+
+    const attendanceDurations = attendance
+      ? calculateAttendanceDurations({
         date: selectedDateStr,
         time_in: attendance.time_in,
         time_out: attendance.time_out,
@@ -1614,8 +1786,8 @@ exports.getDailyLog = async (req, res) => {
         lunch_end: attendance.lunch_end,
         break_start: attendance.break_start,
         break_end: attendance.break_end
-      }) 
-    : {
+      })
+      : {
         working_hours: "00:00:00",
         work_duration: "00:00:00",
         office_hours: "00:00:00",
@@ -1623,11 +1795,11 @@ exports.getDailyLog = async (req, res) => {
         lunch_duration: "00:00:00"
       };
 
-  const breaks_log = [
-    {
-      sr_no: 1,
-      break_type: "Lunch Break",
-      start_time: attendance?.lunch_start || "",
+    const breaks_log = [
+      {
+        sr_no: 1,
+        break_type: "Lunch Break",
+        start_time: attendance?.lunch_start || "",
         end_time: attendance?.lunch_end || "",
         duration: attendanceDurations.lunch_duration
       },
@@ -1668,17 +1840,754 @@ exports.getDailyLog = async (req, res) => {
   }
 };
 
-function getISTDate() {
-  return new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+function getISTOffsetDate(offsetDays = 0) {
+  const now = new Date();
+  now.setHours(now.getHours() + 5, now.getMinutes() + 30); // convert to IST
+  now.setDate(now.getDate() + offsetDays);
+  return now.toISOString().split("T")[0];
 }
 
-function getISTDateString(dateObj = null) {
-  const d = dateObj ? new Date(dateObj) : getISTDate();
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
+exports.getLogs = async (req, res) => {
+  try {
+    const emp_id = req.user.emp_id;
+    const { type, date, week_start_date } = req.query;
+    const user = await User.findOne({ where: { emp_id } });
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    const fetchIds = [user.emp_id, ...(user.previous_emp_ids || [])];
+    const joiningDate = user.joining_date ? new Date(user.joining_date) : null;
+
+    async function processLogs(req, res) {
+      const emp_id = req.user.emp_id;
+      const { type, date, week_start_date } = req.query;
+
+      // if (!type || !["daily", "weekly", "monthly"].includes(type)) {
+      //   return res.status(400).json({ message: "type must be daily | weekly | monthly" });
+      // }
+
+
+
+      // =====================================================================================
+      // 1️⃣ DAILY LOG -----------------------------------------------------------------------
+      // =====================================================================================
+      if (type === "daily") {
+        const selectedDateStr = date || getISTDateString();
+        // const selectedDateStr = finalDate ? new Date(finalDate) : new Date();
+        if (joiningDate && selectedDateStr < joiningDate) {
+          return res.json({ message: "No data available (before joining date)" });
+        }
+
+
+        const todos = await Todo.findAll({
+          where: {
+            emp_id: fetchIds,
+            [Op.or]: [
+              // Today’s tasks
+              { date: selectedDateStr },
+
+              // Previous pending tasks
+              {
+                date: { [Op.lt]: selectedDateStr },
+                status: { [Op.in]: ["pause", "not_started"] }
+              },
+
+              // ⭐ NEW CONDITION — future tasks explicitly created
+              {
+                date: { [Op.gt]: selectedDateStr },
+                status: "not_started"
+              }
+            ]
+
+          },
+          order: [["date", "ASC"], ["sr_no", "ASC"]]
+        });
+
+        const completed = [];
+        const pending = [];
+        const nextDay = [];
+        const keyLearnings = [];
+
+        todos.forEach(todo => {
+          const timeSpent = todo.total_tracked_time
+            ? secondsToHHMM(toSeconds(todo.total_tracked_time))
+            : "00:00";
+
+          // If future date & not_started → next day todo
+          if (todo.date > selectedDateStr && todo.status === "not_started") {
+            nextDay.push({
+              sr_no: todo.sr_no,
+              title: todo.title,
+              description: todo.description,
+              assigned_by: todo.assigned_by || "N/A",
+              priority: todo.priority
+            });
+            return;
+          }
+
+
+          if (todo.status === "complete") {
+            completed.push({
+              sr_no: todo.sr_no,
+              title: todo.title,
+              description: todo.description,
+              assigned_by: todo.assigned_by || "N/A",
+              time_spent: timeSpent,
+              remark: todo.remark || ""
+            });
+            if (todo.key_learning) keyLearnings.push(todo.key_learning);
+          } else if (todo.status === "pause") {
+            pending.push({
+              sr_no: todo.sr_no,
+              title: todo.title,
+              description: todo.description,
+              assigned_by: todo.assigned_by || "N/A",
+              reason_for_delay: todo.remark || "",
+              planned_completion_date: nextWorkingDay(),
+              time_spent: timeSpent
+            });
+          } else if (todo.status === "not_started") {
+            nextDay.push({
+              sr_no: todo.sr_no,
+              title: todo.title,
+              description: todo.description,
+              assigned_by: todo.assigned_by || "N/A",
+              priority: todo.priority
+            });
+          }
+        });
+
+        const attendance = await Attendance.findOne({ where: { emp_id, date: selectedDateStr } });
+
+        if (attendance?.key_learning) keyLearnings.push(attendance.key_learning);
+
+        const attendanceDurations = attendance
+          ? calculateAttendanceDurations(attendance)
+          : {
+            working_hours: "00:00:00",
+            work_duration: "00:00:00",
+            office_hours: "00:00:00",
+            break_duration: "00:00:00",
+            lunch_duration: "00:00:00"
+          };
+
+        return res.json({
+          dailyLog: {
+            header: {
+              "Employee ID": emp_id,
+              "Employee Name": user.name,
+              "Department": user.team_name,
+              "Supervisor Name": user.supervisor_name || null,
+              "Date": selectedDateStr,
+              "Punch in time": attendance?.time_in || null,
+              "Work Start": attendance?.work_start || null,
+              "Punch out time": attendance?.time_out || null,
+              "Work End": attendance?.work_end || null
+            },
+            tasks_completed_today: completed,
+            pending_tasks: pending,
+            next_day_todo: nextDay,
+            breaks_log: [
+              {
+                break_type: "Lunch Break",
+                start_time: attendance?.lunch_start || "",
+                end_time: attendance?.lunch_end || "",
+                duration: attendanceDurations.lunch_duration
+              },
+              {
+                break_type: "Normal Break",
+                start_time: attendance?.break_start || "",
+                end_time: attendance?.break_end || "",
+                duration: attendanceDurations.break_duration
+              }
+            ],
+            key_learnings_notes: keyLearnings.join("\n")
+          }
+        });
+      }
+
+      // =====================================================================================
+      // 2️⃣ WEEKLY LOG ----------------------------------------------------------------------
+      // =====================================================================================
+      if (type === "weekly") {
+        if (!week_start_date)
+          return res.status(400).json({ message: "week_start_date is required" });
+
+        const startDateStr = week_start_date;
+        const endDateStr = (() => {
+          const d = new Date(startDateStr);
+          d.setDate(d.getDate() + 5);
+          return d.toISOString().split("T")[0];
+        })();
+
+        // Check joining date
+        if (joiningDate && endDateStr < joiningDate) {
+          return res.json({ message: "No data available (before joining date)" });
+        }
+
+        // Adjust start if week overlaps joining date
+        if (joiningDate && startDateStr < joiningDate && endDateStr >= joiningDate) {
+          startDateStr = joiningDate;
+        }
+
+        const todos = await Todo.findAll({
+          where: {
+            emp_id: fetchIds,
+            date: {
+              [Op.between]: [startDateStr, endDateStr]
+            }
+          },
+          order: [["date", "ASC"], ["sr_no", "ASC"]]
+        });
+
+        const completed = [];
+        const pending = [];
+        const notStarted = [];
+        const keyLearnings = [];
+
+        todos.forEach(t => {
+          if (t.status === "complete") {
+            completed.push({
+              title: t.title,
+              description: t.description,
+              assigned_by: t.assigned_by,
+              completion_date: t.updatedAt.toISOString().split("T")[0],
+              notes: t.remark
+            });
+          } else if (t.status === "pause") {
+            pending.push({
+              title: t.title,
+              description: t.description,
+              reason_for_delay: t.remark,
+              plan_for_completion: nextWorkingDay()
+            });
+          } else {
+            notStarted.push({
+              title: t.title,
+              description: t.description,
+              priority: t.priority
+            });
+          }
+
+          if (t.key_learning) keyLearnings.push(t.key_learning);
+        });
+
+        return res.json({
+          weeklyLog: {
+            header: {
+              name: user.name,
+              emp_id,
+              department: user.team_name,
+              week_range: `${startDateStr} to ${endDateStr}`,
+              prepared_by: user.name
+            },
+            tasks_completed_this_week: completed,
+            weekly_goals_met: [
+              ...completed.map(c => ({ goal: c.title, status: "Achieved", notes: c.notes })),
+              ...pending.map(p => ({ goal: p.title, status: "Partial", notes: p.reason_for_delay }))
+            ],
+            delays_missed_goals: pending,
+            todo_next_week: notStarted,
+            key_learnings: keyLearnings.join("\n")
+          }
+        });
+      }
+
+      // =====================================================================================
+      // 3️⃣ MONTHLY LOG ---------------------------------------------------------------------
+      // =====================================================================================
+      if (type === "monthly") {
+        if (!date) return res.status(400).json({ message: "Date is required for monthly log" });
+
+        console.log("===== MONTHLY LOG STRICT (1st → End of Month) =====");
+        const selectedDateStr = date || getISTDateString();
+        const selectedDate = new Date(selectedDateStr);
+        const year = selectedDate.getFullYear();
+        const month = selectedDate.getMonth(); // 0-index
+
+        const monthStartStr = `${year}-${String(month + 1).padStart(2, "0")}-01`;
+        const monthEndStr = (() => {
+          const d = new Date(year, month + 1, 0);
+          return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        })();
+        if (joiningDate && monthEndStr < joiningDate) {
+          return res.json({ message: "No data available (before joining date)" });
+        }
+
+        // Adjust month start if month overlaps joining date
+        if (joiningDate && monthStartStr < joiningDate && monthEndStr >= joiningDate) {
+          monthStartStr.setTime(joiningDate.getTime());
+        }
+
+        console.log("Month Start:", monthStartStr);
+        console.log("Month End:", monthEndStr);
+
+        const todos = await Todo.findAll({
+          where: {
+            emp_id: fetchIds,
+            date: {
+              [Op.between]: [monthStartStr, monthEndStr]
+            }
+          },
+          order: [["date", "ASC"], ["sr_no", "ASC"]]
+        });
+
+        console.log("Total todos fetched for month:", todos.length);
+
+        const weeklyGroups = [];
+        let weekStartStr = monthStartStr;
+
+        while (weekStartStr <= monthEndStr) {
+          const weekStartDate = new Date(weekStartStr);
+          let weekEndDate = new Date(weekStartDate);
+          weekEndDate.setDate(weekEndDate.getDate() + 6);
+          if (weekEndDate > new Date(monthEndStr)) weekEndDate = new Date(monthEndStr);
+
+          const weekEndStr = `${weekEndDate.getFullYear()}-${String(weekEndDate.getMonth() + 1).padStart(2, "0")}-${String(weekEndDate.getDate()).padStart(2, "0")}`;
+
+          console.log("Week range:", weekStartStr, "to", weekEndStr);
+
+          const weekTodos = todos.filter(t => t.date >= weekStartStr && t.date <= weekEndStr);
+          console.log("Todos in this week:", weekTodos.length);
+
+          if (weekTodos.length > 0) {
+            const completed = [];
+            const pending = [];
+            const notStarted = [];
+
+            weekTodos.forEach(t => {
+              if (t.status === "complete") {
+                completed.push({
+                  title: t.title,
+                  description: t.description,
+                  assigned_by: t.assigned_by || "N/A",
+                  completion_date: t.updatedAt.toISOString().split("T")[0],
+                  notes: t.remark || ""
+                });
+              } else if (t.status === "pause") {
+                pending.push({
+                  title: t.title,
+                  description: t.description,
+                  assigned_by: t.assigned_by || "N/A",
+                  reason_for_delay: t.remark || "",
+                  plan_for_completion: nextWorkingDay()
+                });
+              } else {
+                notStarted.push({
+                  title: t.title,
+                  description: t.description,
+                  assigned_by: t.assigned_by || "N/A",
+                  priority: t.priority
+                });
+              }
+            });
+
+            weeklyGroups.push({
+              week_start: weekStartStr,
+              week_end: weekEndStr,
+              tasks_completed_this_week: completed,
+              weekly_goals_met: [
+                ...completed.map(c => ({ goal: c.title, status: "Achieved", notes: c.notes })),
+                ...pending.map(p => ({ goal: p.title, status: "Partial", notes: p.reason_for_delay }))
+              ],
+              delays_missed_goals: pending,
+              todo_next_week: notStarted,
+              key_learnings: weekTodos.map(t => t.key_learning).filter(Boolean).join("\n")
+            });
+          }
+
+          // Prepare next week's start
+          const nextWeekStart = new Date(weekStartStr);
+          nextWeekStart.setDate(nextWeekStart.getDate() + 7);
+          weekStartStr = `${nextWeekStart.getFullYear()}-${String(nextWeekStart.getMonth() + 1).padStart(2, "0")}-${String(nextWeekStart.getDate()).padStart(2, "0")}`;
+        }
+
+        console.log("Final weeklyGroups:", weeklyGroups.map(w => ({ start: w.week_start, end: w.week_end })));
+
+        return res.json({
+          monthlyLog: {
+            employee: user.name,
+            emp_id,
+            department: user.team_name,
+            month: `${year}-${String(month + 1).padStart(2, "0")}`,
+            weeks: weeklyGroups
+          }
+        });
+      }
+
+    }
+
+    // Add this helper at the top of your file
+    function addDays(date, days) {
+      const result = new Date(date);
+      result.setDate(result.getDate() + days);
+      return result;
+    }
+
+    // Optional: format Date to YYYY-MM-DD
+    function formatDate(date) {
+      return date.toISOString().split("T")[0];
+    }
+
+    // ------------------ YESTERDAY ------------------
+    if (type === "yesterday") {
+      const today = new Date();
+      const yesterday = addDays(today, -1);
+      const yStr = formatDate(yesterday); // YYYY-MM-DD
+
+      if (joiningDate && yStr < joiningDate) {
+        return res.json({ message: "No data available (before joining date)" });
+      }
+
+
+      // Fetch user once
+      const user = await User.findOne({ where: { emp_id } });
+      if (!user) return res.status(404).json({ message: "User not found" });
+
+      const fetchIds = [user.emp_id, ...(user.previous_emp_ids || [])];
+
+      // Fetch todos for yesterday
+      const todos = await Todo.findAll({
+        where: {
+          emp_id: fetchIds,
+          [Op.or]: [
+            { date: yStr },
+            { date: { [Op.lt]: yStr }, status: { [Op.in]: ["pause", "not_started"] } }
+          ]
+        },
+        order: [["date", "ASC"], ["sr_no", "ASC"]]
+      });
+
+      const completed = [];
+      const pending = [];
+      const nextDay = [];
+      const keyLearnings = [];
+
+      todos.forEach(todo => {
+        const timeSpent = todo.total_tracked_time
+          ? secondsToHHMM(toSeconds(todo.total_tracked_time))
+          : "00:00";
+
+        if (todo.status === "complete") {
+          completed.push({
+            sr_no: todo.sr_no,
+            title: todo.title,
+            description: todo.description,
+            assigned_by: todo.assigned_by || "N/A",
+            time_spent: timeSpent,
+            remark: todo.remark || ""
+          });
+          if (todo.key_learning) keyLearnings.push(todo.key_learning);
+        } else if (todo.status === "pause") {
+          pending.push({
+            sr_no: todo.sr_no,
+            title: todo.title,
+            description: todo.description,
+            assigned_by: todo.assigned_by || "N/A",
+            reason_for_delay: todo.remark || "",
+            planned_completion_date: nextWorkingDay(),
+            time_spent: timeSpent
+          });
+        } else if (todo.status === "not_started") {
+          nextDay.push({
+            sr_no: todo.sr_no,
+            title: todo.title,
+            description: todo.description,
+            assigned_by: todo.assigned_by || "N/A",
+            priority: todo.priority
+          });
+        }
+      });
+
+      // Fetch attendance only for yesterday
+      const attendance = await Attendance.findOne({ where: { emp_id, date: yStr } });
+      if (attendance?.key_learning) keyLearnings.push(attendance.key_learning);
+
+      const attendanceDurations = attendance
+        ? calculateAttendanceDurations(attendance)
+        : {
+          working_hours: "00:00:00",
+          work_duration: "00:00:00",
+          office_hours: "00:00:00",
+          break_duration: "00:00:00",
+          lunch_duration: "00:00:00"
+        };
+
+      return res.json({
+        dailyLog: {
+          header: {
+            "Intern ID": emp_id,
+            "Intern Name": user.name,
+            "Department": user.team_name,
+            "Supervisor Name": user.supervisor_name || null,
+            "Date": yStr,
+            "Punch in time": attendance?.time_in || null,
+            "Work Start": attendance?.work_start || null,
+            "Punch out time": attendance?.time_out || null,
+            "Work End": attendance?.work_end || null
+          },
+          tasks_completed_today: completed,
+          pending_tasks: pending,
+          next_day_todo: nextDay,
+          breaks_log: [
+            {
+              break_type: "Lunch Break",
+              start_time: attendance?.lunch_start || "",
+              end_time: attendance?.lunch_end || "",
+              duration: attendanceDurations.lunch_duration
+            },
+            {
+              break_type: "Normal Break",
+              start_time: attendance?.break_start || "",
+              end_time: attendance?.break_end || "",
+              duration: attendanceDurations.break_duration
+            }
+          ],
+          key_learnings_notes: keyLearnings.join("\n")
+        }
+      });
+    }
+
+
+    // ------------------ LAST WEEK ------------------
+    if (type === "last_week") {
+
+      let today = getISTDate();
+      let lastWeekStart = addDays(today, -today.getDay() - 7);
+      let lastWeekEnd = addDays(lastWeekStart, 6);
+
+      // Check joining date
+      if (joiningDate && lastWeekEnd < joiningDate) {
+        return res.json({ message: "No data available (before joining date)" });
+      }
+
+      // Adjust start if week overlaps joining date
+      if (joiningDate && lastWeekStart < joiningDate && lastWeekEnd >= joiningDate) {
+        lastWeekStart = joiningDate;
+      }
+
+      const todos = await Todo.findAll({
+        where: {
+          emp_id: fetchIds,
+          date: {
+            [Op.between]: [
+              formatDate(lastWeekStart),
+              formatDate(lastWeekEnd)
+            ]
+          }
+        },
+        order: [["date", "ASC"], ["sr_no", "ASC"]]
+      });
+
+      // group in memory
+      const grouped = {};
+      todos.forEach(t => {
+        if (!grouped[t.date])
+          grouped[t.date] = { completed: [], pending: [], notStarted: [], keyLearnings: [] };
+
+        if (t.status === "complete") {
+          grouped[t.date].completed.push({
+            title: t.title,
+            description: t.description,
+            completion_date: t.updatedAt.toISOString().split("T")[0],
+            notes: t.remark,
+          });
+        } else if (t.status === "start" || t.status === "pause") {
+          grouped[t.date].pending.push({
+            title: t.title,
+            description: t.description,
+            reason_for_delay: t.remark,
+            plan_for_completion: nextWorkingDay()
+          });
+        } else {
+          grouped[t.date].notStarted.push({
+            title: t.title,
+            description: t.description,
+            priority: t.priority
+          });
+        }
+
+        if (t.key_learning) grouped[t.date].keyLearnings.push(t.key_learning);
+      });
+
+      return res.json({
+        weeklyLog: {
+          employee: user.name,
+          emp_id,
+          department: user.team_name,
+          week_start: formatDate(lastWeekStart),
+          week_end: formatDate(lastWeekEnd),
+          days: grouped
+        }
+      });
+    }
+
+
+    // ------------------ LAST MONTH ------------------
+    if (type === "last_month") {
+      const now = new Date();
+      let year = now.getFullYear();
+      let month = now.getMonth(); // 0-indexed
+
+      // Previous month
+      const prevMonth = month === 0 ? 11 : month - 1;
+      const prevYear = month === 0 ? year - 1 : year;
+
+      let monthStart = new Date(prevYear, prevMonth, 1);
+      const monthEnd = new Date(prevYear, prevMonth + 1, 0); // last day of prev month
+
+      // Adjust if joiningDate is inside this month
+      if (joiningDate) {
+        const joinDateObj = new Date(joiningDate);
+        if (monthEnd < joinDateObj) {
+          return res.json({ message: "No data available (before joining date)" });
+        }
+        if (monthStart < joinDateObj && monthEnd >= joinDateObj) {
+          monthStart = joinDateObj; // correctly adjust start
+        }
+      }
+
+      // Convert to YYYY-MM-DD for querying
+      const monthStartStr = monthStart.toISOString().split("T")[0];
+      const monthEndStr = monthEnd.toISOString().split("T")[0];
+
+      const user = await User.findOne({ where: { emp_id } });
+      if (!user) return res.status(404).json({ message: "User not found" });
+
+      const fetchIds = [user.emp_id, ...(user.previous_emp_ids || [])];
+
+      const todos = await Todo.findAll({
+        where: {
+          emp_id: fetchIds,
+          date: { [Op.between]: [monthStartStr, monthEndStr] },
+        },
+        order: [["date", "ASC"], ["sr_no", "ASC"]],
+      });
+
+      // Weekly grouping (same as before)
+      const weeklyGroups = [];
+      let weekStart = new Date(monthStart);
+      while (weekStart <= monthEnd) {
+        const weekEnd = new Date(weekStart);
+        weekEnd.setDate(weekEnd.getDate() + 6);
+        if (weekEnd > monthEnd) weekEnd.setDate(monthEnd.getDate());
+
+        const weekTodos = todos.filter(
+          t =>
+            t.date >= weekStart.toISOString().split("T")[0] &&
+            t.date <= weekEnd.toISOString().split("T")[0]
+        );
+
+        if (weekTodos.length) {
+          const completed = [];
+          const pending = [];
+          const notStarted = [];
+
+          weekTodos.forEach(t => {
+            if (t.status === "complete") completed.push(t);
+            else if (t.status === "pause") pending.push(t);
+            else notStarted.push(t);
+          });
+
+          weeklyGroups.push({
+            week_start: weekStart.toISOString().split("T")[0],
+            week_end: weekEnd.toISOString().split("T")[0],
+            tasks_completed_this_week: completed,
+            delays_missed_goals: pending,
+            todo_next_week: notStarted,
+            key_learnings: weekTodos.map(t => t.key_learning).filter(Boolean).join("\n")
+          });
+        }
+
+        weekStart.setDate(weekStart.getDate() + 7);
+      }
+
+      return res.json({
+        monthlyLog: {
+          employee: user.name,
+          emp_id,
+          department: user.team_name,
+          month: `${prevYear}-${String(prevMonth + 1).padStart(2, "0")}`,
+          weeks: weeklyGroups
+        }
+      });
+    }
+
+
+
+
+    // =====================================================================================
+    // 7️⃣ CUSTOM RANGE (start_date → end_date)
+    // =====================================================================================
+    if (type === "custom_range") {
+      const { start_date, end_date } = req.query;
+
+      if (!start_date || !end_date)
+        return res.status(400).json({ message: "start_date and end_date required" });
+
+      // Strictly separate from existing logic → NOT altering monthly/weekly
+      const todos = await Todo.findAll({
+        where: {
+          emp_id: fetchIds,
+          date: {
+            [Op.between]: [start_date, end_date]
+          }
+        },
+        order: [["date", "ASC"], ["sr_no", "ASC"]]
+      });
+
+      const grouped = {};
+
+      todos.forEach(t => {
+        if (!grouped[t.date]) grouped[t.date] = { completed: [], pending: [], notStarted: [], keyLearnings: [] };
+
+        if (t.status === "complete") {
+          grouped[t.date].completed.push({
+            title: t.title,
+            description: t.description,
+            assigned_by: t.assigned_by,
+            completion_date: t.updatedAt.toISOString().split("T")[0],
+            notes: t.remark
+          });
+        } else if (t.status === "pause" || t.status === "start") {
+
+          grouped[t.date].pending.push({
+            title: t.title,
+            description: t.description,
+            reason_for_delay: t.remark,
+            plan_for_completion: nextWorkingDay()
+          });
+        } else {
+          grouped[t.date].notStarted.push({
+            title: t.title,
+            description: t.description,
+            priority: t.priority
+          });
+        }
+
+        if (t.key_learning) grouped[t.date].keyLearnings.push(t.key_learning);
+      });
+
+      return res.json({
+        customRangeLog: {
+          emp_id,
+          employee: user.name,
+          department: user.team_name,
+          range: `${start_date} to ${end_date}`,
+          days: grouped
+        }
+      });
+    }
+    // Normal daily/weekly/monthly call
+    return processLogs(req, res);
+
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "server error", err });
+  }
+};
+
+
 
 function nextWorkingDay() {
   const today = getISTDate();
@@ -1850,30 +2759,387 @@ exports.getWeeklyLog = async (req, res) => {
   }
 };
 
+/**
+ * Generate the same dailyLog object you build in the "daily" branch.
+ * Throws when dateStr is missing/invalid.
+ *
+ * @param {string} emp_id - Employee id (primary)
+ * @param {string} dateStr - YYYY-MM-DD (required)
+ * @param {Object} user - User model instance (needed for name/team)
+ * @param {Array} fetchIds - Array of emp_id and previous ids to query todos
+ */
+async function generateDailyLog(emp_id, dateStr, user, fetchIds) {
+  if (!dateStr) {
+    throw new Error("generateDailyLog called without a date");
+  }
+
+  // parse & validate date
+  const selectedDate = getISTDateFromString(dateStr);
+  if (!selectedDate || isNaN(selectedDate.getTime())) {
+    throw new Error("Invalid date passed to generateDailyLog: " + dateStr);
+  }
+
+  // Check joining date restriction if user has joining_date
+  const joiningDate = user.joining_date ? getISTDateFromString(user.joining_date) : null;
+  if (joiningDate && selectedDate < joiningDate) {
+    return { message: "No data available (before joining date)" };
+  }
+
+  const selectedDateStr = getISTDateStringFromDate(selectedDate);
+
+  // Fetch todos (same criteria as your daily branch)
+  const todos = await Todo.findAll({
+    where: {
+      emp_id: fetchIds,
+      [Op.or]: [
+        { date: selectedDateStr },
+        { date: { [Op.lt]: selectedDateStr }, status: { [Op.in]: ["pause", "not_started"] } }
+      ]
+    },
+    order: [["date", "ASC"], ["sr_no", "ASC"]],
+  });
+
+  const completed = [], pending = [], nextDay = [], keyLearnings = [];
+
+  todos.forEach(todo => {
+    const timeSpent = todo.total_tracked_time ? secondsToHHMM(toSeconds(todo.total_tracked_time)) : "00:00";
+
+    if (todo.status === "complete") {
+      completed.push({
+        sr_no: todo.sr_no,
+        title: todo.title,
+        description: todo.description,
+        assigned_by: todo.assigned_by || "N/A",
+        time_spent: timeSpent,
+        remark: todo.remark || ""
+      });
+      if (todo.key_learning) keyLearnings.push(todo.key_learning);
+    } else if (todo.status === "pause") {
+      pending.push({
+        sr_no: todo.sr_no,
+        title: todo.title,
+        description: todo.description,
+        assigned_by: todo.assigned_by || "N/A",
+        reason_for_delay: todo.remark || "",
+        planned_completion_date: nextWorkingDay(),
+        time_spent: timeSpent
+      });
+      if (todo.key_learning) keyLearnings.push(todo.key_learning);
+    } else if (todo.status === "not_started") {
+      nextDay.push({
+        sr_no: todo.sr_no,
+        title: todo.title,
+        description: todo.description,
+        assigned_by: todo.assigned_by || "N/A",
+        priority: todo.priority
+      });
+    }
+  });
+
+  // Attendance for that date
+  const attendance = await Attendance.findOne({ where: { emp_id, date: selectedDateStr } });
+  const attendanceDurations = attendance
+    ? calculateAttendanceDurations({
+      date: selectedDateStr,
+      time_in: attendance.time_in,
+      time_out: attendance.time_out,
+      work_start: attendance.work_start,
+      work_end: attendance.work_end,
+      lunch_start: attendance.lunch_start,
+      lunch_end: attendance.lunch_end,
+      break_start: attendance.break_start,
+      break_end: attendance.break_end
+    })
+    : {
+      working_hours: "00:00:00",
+      work_duration: "00:00:00",
+      office_hours: "00:00:00",
+      break_duration: "00:00:00",
+      lunch_duration: "00:00:00"
+    };
+
+  const dailyLog = {
+    header: {
+      "Employee ID": emp_id,
+      "Employee Name": user.name,
+      "Department": user.team_name,
+      "Supervisor Name": user.supervisor_name || null,
+      "Date": selectedDateStr,
+      "Punch in time": attendance?.time_in || null,
+      "Work Start": attendance?.work_start || null,
+      "Punch out time": attendance?.time_out || null,
+      "Work End": attendance?.work_end || null
+    },
+    tasks_completed_today: completed,
+    pending_tasks: pending,
+    next_day_todo: nextDay,
+    breaks_log: [
+      {
+        sr_no: 1,
+        break_type: "Lunch Break",
+        start_time: attendance?.lunch_start || "",
+        end_time: attendance?.lunch_end || "",
+        duration: attendanceDurations.lunch_duration
+      },
+      {
+        sr_no: 2,
+        break_type: "Normal Break",
+        start_time: attendance?.break_start || "",
+        end_time: attendance?.break_end || "",
+        duration: attendanceDurations.break_duration
+      }
+    ],
+    key_learnings_notes: attendance?.key_learning ? [attendance.key_learning, ...keyLearnings].join("\n") : keyLearnings.join("\n")
+  };
+
+  return dailyLog;
+}
+
+
 
 
 
 exports.adminGetLog = async (req, res) => {
   try {
-    const user_id = req.user.id;
+    const { type, emp_id, date, week_start_date, month, start_date, end_date } = req.query;
 
-    // Fetch emp_id from IdentityCard
-    const emp_id = await getEmpId(user_id);
-    const { date, week_start_date, month, type } = req.query;
 
-    if (!emp_id) return res.status(400).json({ message: "Employee ID is required" });
-    if (!type || !["daily", "weekly", "monthly"].includes(type))
-      return res.status(400).json({ message: "Type must be one of daily, weekly, monthly" });
+    let finalType = type;
+    let finalDate = date;
+    let finalWeekStartDate = week_start_date;
 
-    // Validate employee
-    const user = await User.findOne({ where: { emp_id } });
-    if (!user) return res.status(404).json({ message: "Employee not found" });
+
+
+    // --------------------------
+    // 1️⃣ Admin must provide emp_id
+    // --------------------------
+    if (!emp_id) {
+      return res.status(400).json({
+        message: "emp_id is required for admin to fetch logs",
+      });
+    }
+
+    // --------------------------
+    // 2️⃣ Validate type
+    // --------------------------
+    // if (!type || !["daily", "weekly", "monthly"].includes(type)) {
+    //   return res.status(400).json({
+    //     message: "Type must be one of daily, weekly, monthly",
+    //   });
+    // }
+
+    const allowed = [
+      "daily", "weekly", "monthly",
+      "today", "yesterday",
+      "current_week", "last_week",
+      "current_month", "last_month",
+      "custom_range"
+    ];
+
+    if (!type || !allowed.includes(type)) {
+      return res.status(400).json({
+        message: "Type must be one of: " + allowed.join(", ")
+      });
+    }
+
+    // --------------------------
+    // 3️⃣ Check employee exists
+    // --------------------------
+    const user = await User.findOne({
+      where: { emp_id },
+    });
+
+    if (!user) {
+      return res.status(404).json({ message: "Employee not found" });
+    }
+
     const fetchIds = [user.emp_id, ...(user.previous_emp_ids || [])];
 
-    if (type === "daily") {
+    const nowIST = getISTDate(); // ALWAYS use IST
+
+    const joiningDate = user.joining_date ? getISTDateFromString(user.joining_date) : null;
+
+
+    // ------------------------------------------------
+    // 🔥 TYPE REMAPPING
+    // ------------------------------------------------
+
+    // TODAY
+    if (type === "today") {
+      finalType = "daily";
+      date = getISTDateStringFromDate(nowIST);
+    }
+
+    // YESTERDAY
+    if (type === "yesterday") {
+      finalType = "daily";
+      const y = new Date(nowIST);
+      y.setDate(y.getDate() - 1);
+      finalDate = getISTDateStringFromDate(y);
+    }
+
+    // CURRENT WEEK → Mon to Sat
+    if (type === "current_week") {
+      finalType = "weekly";
+
+      let d = new Date(nowIST);
+      let day = d.getDay(); // Sun=0
+
+      const numeric = day === 0 ? 7 : day;
+      const monday = new Date(d);
+      monday.setDate(d.getDate() - (numeric - 1));
+
+      week_start_date = getISTDateStringFromDate(monday);
+    }
+
+    // LAST WEEK
+    if (type === "last_week") {
+      finalType = "weekly";
+
+      let d = new Date(nowIST);
+      let day = d.getDay();
+      const numeric = day === 0 ? 7 : day;
+
+      let thisMonday = new Date(d);
+      thisMonday.setDate(d.getDate() - (numeric - 1));
+
+      let lastMonday = new Date(thisMonday);
+      lastMonday.setDate(thisMonday.getDate() - 7);
+
+      finalWeekStartDate = getISTDateStringFromDate(lastMonday);
+    }
+
+
+    // CURRENT MONTH
+    if (type === "current_month") {
+      finalType = "monthly";
+
+      let yr = nowIST.getFullYear();
+      let mn = nowIST.getMonth() + 1;
+      finalDate = `${yr}-${mn}-01`;
+    }
+
+    // LAST MONTH
+    if (type === "last_month") {
+      finalType = "monthly";
+
+      let yr = nowIST.getFullYear();
+      let lastMonth = nowIST.getMonth(); // Previous
+
+      const last = new Date(yr, lastMonth - 1, 1);
+      finalDate = getISTDateStringFromDate(last);
+    }
+
+    // ------------------------------------------------
+    //           CUSTOM RANGE API
+    // ------------------------------------------------
+    if (type === "custom_range") {
+      if (!start_date || !end_date)
+        return res.status(400).json({ message: "start_date and end_date required" });
+
+      const s = getISTDateFromString(start_date);
+      const e = getISTDateFromString(end_date);
+
+      if (joiningDate && e < joiningDate) {
+        return res.json({ message: "No data available (before joining date)" });
+      }
+
+      const adjustedStart = joiningDate && s < joiningDate ? joiningDate : s;
+      const formatDate = (d) => getISTDateStringFromDate(d);
+
+      // Build logs array: call generateDailyLog(emp_id, dateStr, user, fetchIds)
+      const logs = [];
+      let current = new Date(adjustedStart);
+
+      while (current <= e) {
+        const currentDateStr = formatDate(current);
+
+        // Always pass date and required context to avoid the "called without a date" error
+        try {
+          const dailyLog = await generateDailyLog(emp_id, currentDateStr, user, fetchIds);
+          logs.push({
+            date: currentDateStr,
+            ...dailyLog
+          });
+        } catch (err) {
+          // If a single day's log fails, capture the error but continue the loop
+          logs.push({
+            date: currentDateStr,
+            error: err.message || "Error generating daily log"
+          });
+        }
+
+        current.setDate(current.getDate() + 1);
+      }
+
+      return res.json({
+        custom_range: {
+          start_date: formatDate(adjustedStart),
+          end_date: formatDate(e),
+          total_days: logs.length,
+          logs
+        }
+      });
+    }
+
+
+
+    //     if (type === "custom_range") {
+    //   if (!start_date || !end_date)
+    //     return res.status(400).json({ message: "start_date and end_date required" });
+
+    //   const s = getISTDateFromString(start_date);
+    //   const e = getISTDateFromString(end_date);
+
+    //   // Joining date restrictions
+    //   if (joiningDate && e < joiningDate) {
+    //     return res.json({ message: "No data available (before joining date)" });
+    //   }
+
+    //   const adjustedStart = joiningDate && s < joiningDate ? joiningDate : s;
+
+    //   const formatDate = (d) => getISTDateStringFromDate(d);
+
+    //   // Loop through each day
+    //   const logs = [];
+    //   let current = new Date(adjustedStart);
+
+    //   while (current <= e) {
+    //     const currentDateStr = formatDate(current);
+
+    //     // 🔥 Your existing daily log fetcher:
+    //     const dailyLog = await generateDailyLog(emp_id, currentDateStr);
+
+    //     logs.push({
+    //       date: currentDateStr,
+    //       ...dailyLog
+    //     });
+
+    //     current.setDate(current.getDate() - (-1)); // increment by 1 day
+    //   }
+
+    //   return res.json({
+    //     custom_range: {
+    //       start_date: formatDate(adjustedStart),
+    //       end_date: formatDate(e),
+    //       total_days: logs.length,
+    //       logs
+    //     }
+    //   });
+    // }
+
+
+
+
+    if (finalType === "daily") {
       // --- Daily log ---
-      const selectedDate = date ? new Date(date) : getISTDate();
-      const selectedDateStr = selectedDate.toISOString().split("T")[0];
+      const selectedDate = finalDate ? getISTDateFromString(finalDate) : getISTDate();
+      if (joiningDate && selectedDate < joiningDate) {
+        return res.json({ message: "No data available (before joining date)" });
+      }
+
+      const selectedDateStr = getISTDateStringFromDate(selectedDate);
+
 
       const todos = await Todo.findAll({
         where: {
@@ -1925,26 +3191,25 @@ exports.adminGetLog = async (req, res) => {
 
       // Attendance
       const attendance = await Attendance.findOne({ where: { emp_id, date: selectedDateStr } });
-      const attendanceDurations = attendance 
-  ? calculateAttendanceDurations({
-      date: selectedDateStr,
-      time_in: attendance.time_in,
-      time_out: attendance.time_out,
-      work_start: attendance.work_start,
-      work_end: attendance.work_end,
-      lunch_start: attendance.lunch_start,
-      lunch_end: attendance.lunch_end,
-      break_start: attendance.break_start,
-      break_end: attendance.break_end
-    }) 
-  : {
-      working_hours: "00:00:00",
-      work_duration: "00:00:00",
-      office_hours: "00:00:00",
-      break_duration: "00:00:00",
-      lunch_duration: "00:00:00"
-    };
-
+      const attendanceDurations = attendance
+        ? calculateAttendanceDurations({
+          date: selectedDateStr,
+          time_in: attendance.time_in,
+          time_out: attendance.time_out,
+          work_start: attendance.work_start,
+          work_end: attendance.work_end,
+          lunch_start: attendance.lunch_start,
+          lunch_end: attendance.lunch_end,
+          break_start: attendance.break_start,
+          break_end: attendance.break_end
+        })
+        : {
+          working_hours: "00:00:00",
+          work_duration: "00:00:00",
+          office_hours: "00:00:00",
+          break_duration: "00:00:00",
+          lunch_duration: "00:00:00"
+        };
 
       const dailyLog = {
         header: {
@@ -1961,7 +3226,6 @@ exports.adminGetLog = async (req, res) => {
         tasks_completed_today: completed,
         pending_tasks: pending,
         next_day_todo: nextDay,
-        
         breaks_log: [
           {
             sr_no: 1,
@@ -1984,21 +3248,30 @@ exports.adminGetLog = async (req, res) => {
       return res.json({ dailyLog });
     }
 
-    if (type === "weekly") {
-      if (!week_start_date)
+    if (finalType === "weekly") {
+      if (!finalWeekStartDate)
         return res.status(400).json({ message: "week_start_date is required" });
 
-      const startDate = new Date(week_start_date);
-      const endDate = new Date(startDate);
-      endDate.setDate(endDate.getDate() + 5); // Monday → Saturday (6 days)
+      let startDate = getISTDateFromString(finalWeekStartDate);
+      let endDate = new Date(startDate);
+      endDate.setDate(endDate.getDate() + 5);
+
+      if (joiningDate && endDate < joiningDate) {
+        return res.json({ message: "No data available (before joining date)" });
+      }
+
+      // If week overlaps joining date, adjust startDate
+      if (joiningDate && startDate < joiningDate && endDate >= joiningDate) {
+        startDate = joiningDate;
+      }
 
       const todos = await Todo.findAll({
         where: {
           emp_id: fetchIds,
           date: {
             [Op.between]: [
-              startDate.toISOString().split("T")[0],
-              endDate.toISOString().split("T")[0]
+              getISTDateStringFromDate(startDate),
+              getISTDateStringFromDate(endDate)
             ]
           }
         },
@@ -2017,7 +3290,7 @@ exports.adminGetLog = async (req, res) => {
             title: t.title,
             description: t.description,
             assigned_by: t.assigned_by || "N/A",
-            completion_date: t.updatedAt.toISOString().split("T")[0],
+            completion_date: getISTDateStringFromDate(new Date(t.updatedAt)),
             notes: t.remark || ""
           });
         } else if (t.status === "pause") {
@@ -2041,12 +3314,14 @@ exports.adminGetLog = async (req, res) => {
       // Weekly goals met (completed + paused)
       const weeklyGoalsMet = [
         ...completed.map(c => ({
-          goal: c.title,
+          title: c.title,
+          description: c.description,
           status: "Achieved",
           notes: c.notes
         })),
         ...pending.map(p => ({
-          goal: p.title,
+          title: p.title,
+          description: p.description,
           status: "Partial",
           notes: p.reason_for_delay
         }))
@@ -2055,15 +3330,15 @@ exports.adminGetLog = async (req, res) => {
       const weeklyLog = {
         header: {
           name: user.name,
+          "Employee ID": emp_id,
           department: user.team_name,
-          week_covered: `${startDate.toISOString().split("T")[0]} to ${endDate.toISOString().split("T")[0]}`,
+          week_covered: `${getISTDateStringFromDate(startDate)} to ${getISTDateStringFromDate(endDate)}`,
           prepared_by: user.name
         },
         tasks_completed_this_week: completed,
         weekly_goals_met: weeklyGoalsMet,
         delays_missed_goals: pending, // NOT including not_started
         todo_next_week: [
-          //...pending.map(d => ({ ...d, priority: "Medium" })),
           ...notStarted.map(n => ({ ...n })) // not started tasks go only here
         ],
         key_learnings_suggestions: todos.map(t => t.key_learning).filter(Boolean).join("\n")
@@ -2072,44 +3347,61 @@ exports.adminGetLog = async (req, res) => {
       return res.json({ weeklyLog });
     }
 
+    // Override incoming date when we auto-compute month start
+    // if (finalType === "monthly" && finalDate) {
+    //   req.query.date = finalDate;
+    // }
 
-    if (type === "monthly") {
-      if (!date)
+    if (finalType === "monthly") {
+      if (!finalDate)
         return res.status(400).json({ message: "Date is required for monthly log" });
 
-      const selectedDate = new Date(date);
+      const selectedDate = getISTDateFromString(finalDate);
+
       const year = selectedDate.getFullYear();
       const month = selectedDate.getMonth();
-
       const monthStart = new Date(year, month, 1);
       const monthEnd = new Date(year, month + 1, 0);
 
+      if (joiningDate && monthEnd < joiningDate) {
+        return res.json({ message: "No data available (before joining date)" });
+      }
+
+      // If month overlaps joining date, adjust monthStart
+      if (joiningDate && monthStart < joiningDate && monthEnd >= joiningDate) {
+        monthStart.setTime(joiningDate.getTime());
+      }
+
+      // Fetch full month tasks
       const todos = await Todo.findAll({
         where: {
           emp_id: fetchIds,
           date: {
             [Op.between]: [
-              monthStart.toISOString().split("T")[0],
-              monthEnd.toISOString().split("T")[0]
+              getISTDateStringFromDate(monthStart),
+              getISTDateStringFromDate(monthEnd)
             ]
           }
         },
         order: [["date", "ASC"], ["sr_no", "ASC"]]
       });
 
+      // Build weekly groups
       const weeklyGroups = [];
       let currentWeekStart = new Date(monthStart);
 
       while (currentWeekStart <= monthEnd) {
-        const currentWeekEnd = new Date(currentWeekStart);
-        currentWeekEnd.setDate(currentWeekEnd.getDate() + 5); // 6-day week (Mon–Sat)
 
-        if (currentWeekEnd > monthEnd)
-          currentWeekEnd.setDate(monthEnd.getDate());
+        // Create fresh copies for each week
+        let weekStart = new Date(currentWeekStart);
+        let weekEnd = new Date(weekStart);
+        weekEnd.setDate(weekEnd.getDate() + 5); // Monday–Saturday style
+
+        if (weekEnd > monthEnd) weekEnd = new Date(monthEnd);
 
         const weekTodos = todos.filter(t => {
-          const d = new Date(t.date);
-          return d >= currentWeekStart && d <= currentWeekEnd;
+          const d = getISTDateFromString(t.date);
+          return d >= weekStart && d <= weekEnd;
         });
 
         if (weekTodos.length > 0) {
@@ -2117,14 +3409,13 @@ exports.adminGetLog = async (req, res) => {
           const pending = [];
           const notStarted = [];
 
-          // SAME WEEKLY LOG LOGIC
           weekTodos.forEach(t => {
             if (t.status === "complete") {
               completed.push({
                 title: t.title,
                 description: t.description,
                 assigned_by: t.assigned_by || "N/A",
-                completion_date: t.updatedAt.toISOString().split("T")[0],
+                completion_date: getISTDateStringFromDate(new Date(t.updatedAt)),
                 notes: t.remark || ""
               });
             } else if (t.status === "pause") {
@@ -2145,10 +3436,9 @@ exports.adminGetLog = async (req, res) => {
             }
           });
 
-          // WEEK OBJECT (FULL WEEKLY REPORT)
           weeklyGroups.push({
-            week_start: currentWeekStart.toISOString().split("T")[0],
-            week_end: currentWeekEnd.toISOString().split("T")[0],
+            week_start: getISTDateStringFromDate(weekStart),
+            week_end: getISTDateStringFromDate(weekEnd),
 
             tasks_completed_this_week: completed,
 
@@ -2165,11 +3455,11 @@ exports.adminGetLog = async (req, res) => {
               }))
             ],
 
-            delays_missed_goals: pending, // NOT STARTED SHOULD NOT BE HERE
+            delays_missed_goals: pending,
 
             todo_next_week: [
-              ...pending.map(d => ({ ...d, priority: "Medium" })), // pending
-              ...notStarted // not started goes to next week
+              ...pending.map(d => ({ ...d, priority: "Medium" })),
+              ...notStarted
             ],
 
             key_learnings_suggestions: weekTodos
@@ -2179,25 +3469,45 @@ exports.adminGetLog = async (req, res) => {
           });
         }
 
-        // NEXT WEEK (exactly 6 days later)
+        // Move to next week (exactly 6 days)
         currentWeekStart.setDate(currentWeekStart.getDate() + 6);
       }
 
       return res.json({
         employee: user.name,
+        "Employee ID": emp_id,
         department: user.team_name,
         month: `${year}-${month + 1}`,
         monthlyLog: weeklyGroups
       });
     }
 
-
-
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Server error", error });
   }
 };
+
+
+// -------------------
+// IST helper functions
+// -------------------
+
+function getISTDateStringFromDate(date) {
+  const d = new Date(date.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getISTDateFromString(dateStr) {
+  const d = new Date(dateStr);
+  const istDate = new Date(d.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+  return istDate;
+}
+
+
 
 
 exports.addMissedPunchoutRemark = async (req, res) => {

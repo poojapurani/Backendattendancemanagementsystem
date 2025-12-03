@@ -3,51 +3,76 @@ const Session = require("../models/Session");
 const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 
-// ------------------ JWT Access Token ------------------
-function generateAccessToken(user) {
-  return jwt.sign(
-    { id: user.id, role: user.role, emp_id: user.emp_id },
-    process.env.ACCESS_TOKEN_SECRET,
-    { expiresIn: "15m" }
-  );
-  console.log("ACCESS_TOKEN_SECRET:", process.env.ACCESS_TOKEN_SECRET);
-
+function hashWithSalt(token, salt) {
+  return crypto.createHash("sha256").update(token + salt).digest("hex");
 }
 
-exports.createSession = async (user, req, res, extra = {}) => {
-  try {
-    const refresh_token = crypto.randomBytes(64).toString("hex");
-    const refresh_hash = crypto.createHash("sha256").update(refresh_token).digest("hex");
+// ------------------ JWT Access Token ------------------
+function generateAccessToken(user, jti, session_id,permissions = []) {
+  const payload = {
+    id: user.id,
+    emp_id: user.emp_id,
+    role: user.role,
+    permissions,
+    session_id,
+    jti,
+    issued_at: Date.now(),
+  };
 
-    const access_token = generateAccessToken(user);
+  const token = jwt.sign(payload, process.env.ACCESS_TOKEN_SECRET, {
+    expiresIn: "15m",
+  });
 
-    await Session.create({
-      user_id: user.id,
-      refresh_token_hash: refresh_hash,
-      access_token,
-      device_info: {
-        ua: req.headers["user-agent"],
-        ip: req.ip,
-      },
-      refresh_expires_at: new Date(Date.now() + 30 * 60 * 1000),
-      max_expires_at: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000),
-      ...extra
-    });
+  return token
+}
 
-    res.cookie("refresh_token", refresh_token, {
-      httpOnly: true,
-      secure: true,
-      sameSite: "none",
-      maxAge: 30 * 60 * 1000,
-    });
-    
 
-    return { access_token, refresh_token };
-  } catch (err) {
-    console.error("Session creation failed:", err);
-    throw new Error("Failed to create session");
-  }
+async function createSession(user, req, res, extra = {}) {
+  const session_id = crypto.randomBytes(32).toString("hex");
+  const jti = crypto.randomBytes(16).toString("hex");
+
+// Refresh token (plaintext sent to cookie)
+  const refresh_token = crypto.randomBytes(64).toString("hex");
+
+  // Per-session salt
+  const salt = crypto.randomBytes(32).toString("hex");
+
+  // Store hash = sha256(refresh_token + salt)
+  const refresh_hash = hashWithSalt(refresh_token, salt);
+
+  const permissions = extra.permissions || [];
+
+  const access_token = generateAccessToken(user, jti, session_id, permissions);
+
+  await Session.create({
+    session_id,
+    access_jti: jti,
+    user_id: user.id,
+    refresh_token_hash: refresh_hash,
+    refresh_token_salt: salt,
+    access_token,
+    refresh_expires_at: new Date(Date.now() + 30 * 60 * 1000), // 30 mins
+    max_expires_at: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000),
+    device_info: {
+      ua: req.headers["user-agent"],
+      ip: req.ip,
+    },
+    ...extra
+  });
+
+  res.cookie("refresh_token", refresh_token, {
+    httpOnly: true,
+    secure: true,
+    sameSite: "none",
+    maxAge: 30 * 60 * 1000,
+  });
+
+  return { access_token, refresh_token };
 };
 
-// Expose JWT generator
-exports.generateAccessToken = generateAccessToken;
+
+module.exports = {
+  hashWithSalt,
+  generateAccessToken,
+  createSession
+};

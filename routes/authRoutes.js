@@ -9,14 +9,14 @@ router.post("/register", verifyToken, verifyAdmin, authController.register);
 
 // Public login
 router.post("/login", authController.login);
-router.post('/logout', verifyToken, authController.logout);
+// router.post('/logout', verifyToken, authController.logout);
 
-router.post("/refresh", authController.refreshAccessToken);
+router.post("/get-access-token", authController.getAccessToken);
 
 // 📌 Attendance status route 
 // router.get("/today-status", verifyToken, authController.getTodayAttendanceStatus);
 
-router.post("/convert-intern/:emp_id",verifyToken, verifyAdmin, authController.convertInternToEmployee);
+router.post("/convert/:emp_id",verifyToken, verifyAdmin, authController.convertInternToEmployee);
 
 //admin
 

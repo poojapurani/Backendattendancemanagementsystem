@@ -3,12 +3,13 @@ const Permissions = require("../models/Permissions");
 exports.checkPermission = (api) => {
   return async (req, res, next) => {
     try {
-      const userPermissions = req.user.permissions; // from JWT
+      let userPermissions = req.user.permissions; // from JWT
 
-      
       if (typeof userPermissions === "string") {
         userPermissions = JSON.parse(userPermissions);
       }
+
+      if (userPermissions.includes("*")) return next();
 
 
       if (!userPermissions || userPermissions.length === 0) {

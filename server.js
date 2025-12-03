@@ -12,7 +12,7 @@ dotenv.config();
 const app = express();
 
 const corsOptions = {
-  origin: ["https://30bb8b66-db59-41a0-be34-5949c793b98f-00-3l0ib63qho6g1.pike.replit.dev","http://localhost:5000"],
+  origin: ["https://cf795036-4d71-49d5-8a0d-bd1211781b79-00-ehl63d2zfjup.sisko.replit.dev","http://localhost:5000"],
   methods: "GET,HEAD,PUT,PATCH,POST,DELETE",
   credentials: true,
 };

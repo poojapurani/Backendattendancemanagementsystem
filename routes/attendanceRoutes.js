@@ -29,6 +29,8 @@ router.post("/work-end", verifyToken, verifyUser, attendanceController.endWork);
 
 router.get("/daily-log", verifyToken, verifyUser, attendanceController.getDailyLog);
 router.get("/getWeeklyLog",  verifyToken, verifyUser, attendanceController.getWeeklyLog);
+router.get("/logs", verifyToken, attendanceController.getLogs);
+
 
 router.get("/today-status", verifyToken, attendanceController.getTodayAttendanceStatus);
 router.put("/key-learning", verifyToken, verifyUser, attendanceController.updateKeyLearning);

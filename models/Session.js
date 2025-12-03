@@ -32,6 +32,11 @@ const Session = sequelize.define(
       allowNull: false,
     },
 
+    refresh_token_salt: {      // <-- NEW
+      type: DataTypes.TEXT,
+      allowNull: true,         // allowNull true for migration fallback
+    },
+
     access_token: {
       type: DataTypes.TEXT,
       allowNull: true,
@@ -81,6 +86,16 @@ const Session = sequelize.define(
       type: DataTypes.TEXT,
       allowNull: true,
     },
+    session_id: {
+      type: DataTypes.STRING(100),
+      allowNull: false,
+      unique: true
+    },
+    access_jti: {
+      type: DataTypes.STRING(100),
+      allowNull: false,
+    },
+
   },
   {
     tableName: "sessions",
